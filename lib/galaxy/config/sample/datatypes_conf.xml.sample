@@ -1201,6 +1201,15 @@
     <!-- rdeval types -->
     <datatype extension="rd" type="galaxy.datatypes.binary:Binary" mimetype="application/octet-stream" display_in_upload="true" subclass="true" description="Rdeval read sketch"/>
     <datatype extension="safetensors" type="galaxy.datatypes.binary:Safetensors" mimetype="application/octet-stream" display_in_upload="true" description="A simple format for storing tensors safely (as opposed to pickle) and that is still fast (zero-copy)" description_url="https://huggingface.co/docs/safetensors/index"/>
+     <!-- Single DICOM instance -->
+    <datatype extension="dicom" type="galaxy.datatypes.dicom:DICOM" display_in_upload="true" description="single-file DICOM instance (.dcm / .dicom)"/>
+    <datatype extension="dcm" type="galaxy.datatypes.dicom:DICOM" display_in_upload="true" description="single-file DICOM instance (.dcm / .dicom)"/>
+
+    <!-- DICOM series: composite directory of .dcm files -->
+    <datatype extension="dicom_series" type="galaxy.datatypes.dicom:DICOMSeries" composite="true" display_in_upload="false" description="composite dataset representing a DICOM series"/>
+
+    <!-- DICOM reference JSON pointer -->
+    <datatype extension="dicom_reference" type="galaxy.datatypes.dicom:DICOMReference" display_in_upload="false" description="JSON &quot;pointer&quot; to DICOM study/series via DICOMweb"/>
   </registration>
 
   <sniffers>
@@ -1511,5 +1520,7 @@
     <sniffer type="galaxy.datatypes.text:StormSample"/>
     <sniffer type="galaxy.datatypes.text:StormCheck"/>
     <sniffer type="galaxy.datatypes.text:SourmashSignature"/>
+    <sniffer type="galaxy.datatypes.dicom:DICOM"/>
+    <sniffer type="galaxy.datatypes.dicom:DICOMReference"/>
   </sniffers>
 </datatypes>
