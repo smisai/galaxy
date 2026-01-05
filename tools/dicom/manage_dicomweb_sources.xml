@@ -1,0 +1,104 @@
+<tool id="dicomweb_manage_sources" name="DICOMweb: Manage Data Sources" version="0.1.0">
+  <description>Add, update, or remove DICOMweb sources (user-level)</description>
+
+  <command detect_errors="aggressive"><![CDATA[
+python '$__tool_directory__/manage_dicomweb_sources.py'
+  #if $catalog:
+    --in '$catalog'
+  #end if
+  --action '$do_add_update.action'
+  #if str($do_add_update.action) in ["add", "update"]:
+    --id '$do_add_update.sid'
+    --label '$do_add_update.label'
+    --qido '$do_add_update.qidoRoot'
+    --wado '$do_add_update.wadoRoot'
+    #if $do_add_update.wadoUriRoot:
+      --wado_uri '$do_add_update.wadoUriRoot'
+    #end if
+    #if $do_add_update.stowRoot:
+      --stow '$do_add_update.stowRoot'
+    #end if
+    #if $do_add_update.auth_token:
+      --auth_token '$do_add_update.auth_token'
+    #end if
+    #if $do_add_update.capabilities_json:
+      --capabilities '$do_add_update.capabilities_json'
+    #end if
+  #end if
+  #if str($do_add_update.action) == "remove":
+    --id '$do_add_update.sid_remove'
+  #end if
+  --out '$out'
+  ]]></command>
+
+  <inputs>
+    <param name="catalog" type="data" format="json" optional="true"
+           label="Existing sources catalog (optional)"
+           help="If not provided, a new catalog will be created."/>
+
+    <conditional name="do_add_update">
+      <param name="action" type="select" label="Action">
+        <option value="add">add</option>
+        <option value="update">update</option>
+        <option value="remove">remove</option>
+      </param>
+
+      <when value="add">
+        <param name="sid" type="text" label="Source ID (unique key)" help="Example: ORTHANC_LOCAL" optional="false"/>
+        <param name="label" type="text" label="Label" help="Human-friendly name" optional="true"/>
+        <param name="qidoRoot" type="text" label="QIDO Root URL" optional="false">
+            <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
+        </param>
+        <param name="wadoRoot" type="text" label="WADO-RS Root URL" optional="false">
+             <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
+        </param>
+        <param name="wadoUriRoot" type="text" optional="true" label="WADO-URI Root URL (optional)">
+             <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
+        </param>
+        <param name="stowRoot" type="text" optional="true" label="STOW Root URL (optional)">
+             <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
+        </param>
+        <param name="auth_token" type="text" optional="true" label="Auth Token (Bearer)" help="Optional Bearer token for OAuth2 proxy"/>
+        <param name="capabilities_json" type="text" optional="true"
+               label="Capabilities JSON (optional)"
+               help='Example: {"qidoSupportsIncludeField":true,"supportsWildcard":true}'/>
+      </when>
+
+      <when value="update">
+        <param name="sid" type="text" label="Source ID to update" optional="false"/>
+        <param name="label" type="text" label="Label"/>
+        <param name="qidoRoot" type="text" label="QIDO Root URL">
+            <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
+        </param>
+        <param name="wadoRoot" type="text" label="WADO-RS Root URL">
+            <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
+        </param>
+        <param name="wadoUriRoot" type="text" optional="true" label="WADO-URI Root URL (optional)">
+            <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
+        </param>
+        <param name="stowRoot" type="text" optional="true" label="STOW Root URL (optional)">
+            <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
+        </param>
+        <param name="auth_token" type="text" optional="true" label="Auth Token (Bearer)" help="Optional Bearer token for OAuth2 proxy"/>
+        <param name="capabilities_json" type="text" optional="true" label="Capabilities JSON (optional)"/>
+      </when>
+
+      <when value="remove">
+        <param name="sid_remove" type="text" label="Source ID to remove" optional="false"/>
+      </when>
+    </conditional>
+  </inputs>
+
+  <outputs>
+    <data name="out" format="json" label="DICOMweb sources catalog"/>
+  </outputs>
+
+  <help><![CDATA[
+This tool maintains a user-level DICOMweb sources catalog as a JSON dataset.
+
+Typical workflow:
+1) Run this tool to create a catalog and add sources.
+2) Use the catalog as input to “Register DICOMReference” and “Fetch Series Copy”.
+3) Update/remove sources by re-running this tool on the existing catalog.
+]]></help>
+</tool>

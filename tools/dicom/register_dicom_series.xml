@@ -1,0 +1,31 @@
+<tool id="dicom_register_series" name="DICOMweb: Register Series" version="0.1.0">
+  <description>Verify and register a DICOM Series from a DICOMweb source</description>
+  <command detect_errors="aggressive"><![CDATA[
+python '$__tool_directory__/register_dicom_series.py'
+  --catalog '$catalog'
+  --source_id '$source_id'
+  --study_uid '$study_uid'
+  --series_uid '$series_uid'
+  --out '$out'
+  ]]></command>
+
+  <inputs>
+    <param name="catalog" type="data" format="json" label="DICOMweb Sources Catalog"/>
+    <param name="source_id" type="text" label="Source ID" help="Must match an ID in the catalog"/>
+    <param name="study_uid" type="text" label="Study Instance UID"/>
+    <param name="series_uid" type="text" label="Series Instance UID"/>
+  </inputs>
+
+  <outputs>
+    <!-- 
+      format="dicom_reference" refers to the datatype extension defined in datatypes_conf.xml
+      which maps to galaxy.datatypes.dicom:DICOMReference 
+    -->
+    <data name="out" format="dicom_reference" label="DICOM Reference: ${series_uid}"/>
+  </outputs>
+
+  <help><![CDATA[
+Queries the specified DICOMweb source (QIDO-RS) to verify the existence of the Study/Series and fetches metadata.
+Creates a Lightweight DICOM Reference dataset used for downstream import or visualization.
+  ]]></help>
+</tool>

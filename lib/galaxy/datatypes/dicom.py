@@ -29,7 +29,6 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 #  Single-file DICOM instance
 # ---------------------------------------------------------------------------
-
 class DICOM(Binary):
     """
     Single DICOM instance datatype.
@@ -85,10 +84,6 @@ class DICOM(Binary):
             log.info(f"sniff: DICOM Debug - File: {filename}, reading metadata")
             # Presence of standard identifiers is enough to treat as DICOM
             if hasattr(ds, "SOPClassUID") or hasattr(ds, "StudyInstanceUID"):
-                log.info(f"Has StudyInstanceUID? {getattr(ds, 'StudyInstanceUID', None)}")
-                log.info(f"Has SeriesInstanceUID? {getattr(ds, 'SeriesInstanceUID', None)}")
-                log.info(f"Has PatientID? {getattr(ds, 'PatientID', None)}")
-                log.info(f"Modality: {getattr(ds, 'Modality', None)}")
                 return True
         except Exception:
             log.exception("Failed to read DICOM metadata in sniff")
@@ -114,11 +109,6 @@ class DICOM(Binary):
 
         try:
             ds = pydicom.dcmread(dataset.get_file_name(), stop_before_pixels=True, force=True)
-            log.info(f"set_metaDICOM Debug - File: {dataset.get_file_name()}")
-            log.info(f"Has StudyInstanceUID? {getattr(ds, 'StudyInstanceUID', None)}")
-            log.info(f"Has SeriesInstanceUID? {getattr(ds, 'SeriesInstanceUID', None)}")
-            log.info(f"Has PatientID? {getattr(ds, 'PatientID', None)}")
-            log.info(f"Modality: {getattr(ds, 'Modality', None)}")
         except Exception:
             log.exception("Failed to read DICOM metadata in set_meta")
             return
@@ -132,11 +122,9 @@ class DICOM(Binary):
         md.study_date = getattr(ds, "StudyDate",         None)
         md.body_part  = getattr(ds, "BodyPartExamined",  None)
 
-
 # ---------------------------------------------------------------------------
 #  Multi-file DICOM series (composite dataset)
 # ---------------------------------------------------------------------------
-
 class DICOMSeries(Directory):
     """
     Composite Galaxy dataset representing a single DICOM series as a directory
@@ -155,6 +143,7 @@ class DICOMSeries(Directory):
     """
 
     file_ext = "dicom_series"
+    # is_binary = True (Reverted to allow text preview of manifest)
 
     # Series-level metadata
     MetadataElement(name="study_uid",  default=None, desc="StudyInstanceUID",  readonly=True)
@@ -165,18 +154,16 @@ class DICOMSeries(Directory):
     MetadataElement(name="body_part",  default=None, desc="BodyPartExamined",  readonly=True)
     MetadataElement(name="n_images",   default=0,    desc="Number of images",  readonly=True)
 
+    # We use the manifest file of the series as the mime type to enable preview of the JSON manifest.
     def get_mime(self):
-        # No single MIME describes a directory of DICOM files, but this is a hint.
-        return "application/dicom"
+        return "application/json"
+
+    # Explicitly set display_behavior to prevent "Download Required" message
+    display_behavior = "text"
 
     def set_meta(self, dataset: DatasetProtocol, overwrite: bool = True, **kwd) -> None:
         """
         Called by Galaxy after the dataset is created or after tools write it.
-
-        - Locate the extra_files_path directory.
-        - Count the .dcm files.
-        - Sample one .dcm file for series-level metadata (StudyUID, SeriesUID,
-          Modality, PatientID, StudyDate, BodyPart).
         """
         try:
             import pydicom
@@ -212,6 +199,56 @@ class DICOMSeries(Directory):
         md.study_date = getattr(ds, "StudyDate",         None)
         md.body_part  = getattr(ds, "BodyPartExamined",  None)
 
+    def set_peek(self, dataset: DatasetProtocol, is_multi_byte: bool = False) -> None:
+        """
+        Set the peek and blurb text.
+        """
+        log.warning("DICOMSeries.set_peek called")
+        if not dataset.dataset.purged:
+            n_images = dataset.metadata.n_images
+            if n_images is None:
+                n_images = "?"
+            
+            dataset.blurb = f"DICOM Series ({n_images} images)"
+            
+            # Generate peek table
+            peek_lines = []
+            peek_lines.append('<table cellspacing="0" cellpadding="3">')
+            peek_lines.append(f'<tr><th>Study UID</th><td>{dataset.metadata.study_uid}</td></tr>')
+            peek_lines.append(f'<tr><th>Modality</th><td>{dataset.metadata.modality}</td></tr>')
+            peek_lines.append(f'<tr><th>Patient ID</th><td>{dataset.metadata.patient_id}</td></tr>')
+            peek_lines.append(f'<tr><th>Study Date</th><td>{dataset.metadata.study_date}</td></tr>')
+            peek_lines.append(f'<tr><th>Image Count</th><td>{n_images}</td></tr>')
+            peek_lines.append('</table>')
+            
+            dataset.peek = "".join(peek_lines)
+        else:
+            dataset.peek = "file does not exist"
+            dataset.blurb = "file purged"
+
+    def _serve_file_download(self, headers, data, trans, to_ext, file_size, **kwd):
+        # Force archiving (zipping) of the composite dataset (files in extra_files_path)
+        return self._archive_composite_dataset(trans, data, headers, do_action="zip")
+
+    def display_data(self, trans, dataset, preview=False, filename=None, to_ext=None, **kwd):
+        """
+        Show manifest.json content when previewing (eye icon).
+        """
+        log.warning(f"DICOMSeries.display_data called. Filename: {filename}, Preview: {preview}")
+
+        # If previewing the root dataset (no specific filename requested)
+        # AND it is not a download request (to_ext is None)
+        if (preview or not filename) and not to_ext:
+            manifest_path = os.path.join(dataset.extra_files_path, "manifest.json")
+            if os.path.exists(manifest_path):
+                headers = kwd.get("headers", {})
+                headers["Content-Type"] = "application/json"
+                log.info(f"DICOMSeries: Serving manifest using yield_user_file_content from {manifest_path}")
+                return self._yield_user_file_content(trans, dataset, manifest_path, headers), headers
+        
+        # Fallback to standard directory listing
+        return super().display_data(trans, dataset, preview, filename, to_ext, **kwd)
+
     def sniff(self, filename: str) -> bool:
         """
         In typical deployments, DICOMSeries datasets are created by tools
@@ -232,29 +269,6 @@ class DICOMReference(Text):
     """
     JSON "pointer" datatype that references a DICOM study/series stored in
     an external DICOMweb-compatible server (e.g. Orthanc).
-
-    The file contents are JSON, e.g.:
-
-        {
-          "dicomweb": {
-            "qido": "https://orthanc.local/dicom-web",
-            "wado": "https://orthanc.local/dicom-web",
-            "stow": "https://orthanc.local/dicom-web"
-          },
-          "uids": {
-            "StudyInstanceUID": "1.2.3.4...",
-            "SeriesInstanceUIDs": ["1.2.3.4.1", "1.2.3.4.2"]
-          },
-          "tags": {
-            "PatientID": "P123",
-            "Modality": "MR",
-            "StudyDate": "20250110"
-          },
-          "auth_profile": "orthanc-dev"
-        }
-
-    Tools and visualizations (e.g. OHIF) use this as a lightweight handle
-    to query and stream actual DICOM data from Orthanc.
     """
 
     file_ext = "dicom_reference"

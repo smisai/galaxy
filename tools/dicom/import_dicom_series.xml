@@ -1,0 +1,34 @@
+<tool id="dicom_import_series" name="DICOMweb: Import Series" version="0.1.0">
+  <description>Download and de-identify DICOM series from DICOMweb source</description>
+  <command detect_errors="aggressive"><![CDATA[
+python '$__tool_directory__/import_dicom_series.py'
+  --input '$input_ref'
+  --out_dir '$out_series.extra_files_path'
+  --out_file '$out_series'
+  ]]></command>
+
+  <inputs>
+    <!-- 
+      format="dicom_reference" ensures the input dataset is of type galaxy.datatypes.dicom:DICOMReference 
+    -->
+    <param name="input_ref" type="data" format="dicom_reference" label="DICOM Reference"/>
+  </inputs>
+
+  <outputs>
+    <!-- 
+      format="dicom_series" refers to the datatype extension defined in datatypes_conf.xml
+      which maps to galaxy.datatypes.dicom:DICOMSeries
+    -->
+    <data name="out_series" format="dicom_series" label="De-identified Series"/>
+  </outputs>
+
+  <requirements>
+    <requirement type="package" version="2.4.4">pydicom</requirement>
+    <requirement type="package" version="2.31.0">requests</requirement>
+  </requirements>
+
+  <help><![CDATA[
+Downloads a DICOM Series via WADO-RS using configuration from the input DICOM Reference.
+De-identifies the data by stripping sensitive Patient metadata before saving.
+  ]]></help>
+</tool>

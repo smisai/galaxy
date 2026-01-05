@@ -158,4 +158,9 @@
     <tool file="interactive/interactivetool_rstudio_bioc_3.20.xml" />
   </section>
   -->
+  <section id="dicomtools" name="DICOM Support via DICOMweb">
+    <tool file="dicom/manage_dicomweb_sources.xml" />
+    <tool file="dicom/register_dicom_series.xml" />
+    <tool file="dicom/import_dicom_series.xml" />
+  </section>
 </toolbox>
