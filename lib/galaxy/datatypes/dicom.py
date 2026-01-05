@@ -158,8 +158,8 @@ class DICOMSeries(Directory):
     def get_mime(self):
         return "application/json"
 
-    # Explicitly set display_behavior to prevent "Download Required" message
-    display_behavior = "text"
+    is_binary = False
+    display_behavior = "inline" 
 
     def set_meta(self, dataset: DatasetProtocol, overwrite: bool = True, **kwd) -> None:
         """
@@ -199,7 +199,7 @@ class DICOMSeries(Directory):
         md.study_date = getattr(ds, "StudyDate",         None)
         md.body_part  = getattr(ds, "BodyPartExamined",  None)
 
-    def set_peek(self, dataset: DatasetProtocol, is_multi_byte: bool = False) -> None:
+    def set_peek(self, dataset: DatasetProtocol, **kwd) -> None:
         """
         Set the peek and blurb text.
         """
