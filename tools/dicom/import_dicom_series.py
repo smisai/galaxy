@@ -39,7 +39,7 @@ def deidentify_dataset(ds):
     # For this implementation, we just prefix/suffix or assume downstream handling.
     # But user requested stripping sensitive info.
     # Let's replace PatientID with an anonymous ID if present.
-    original_pid = getattr(ds, 'PatientID', 'unknown')
+    # original_pid = getattr(ds, 'PatientID', 'unknown')
     # Use a deterministic hash logic or simple replacement could be better
     # depending on study requirements. Here we just strictly clean.
     ds.PatientID = f"ANON_{uuid.uuid4().hex[:8]}"

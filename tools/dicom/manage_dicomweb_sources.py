@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import argparse, json, sys
+import argparse
+import json
 from copy import deepcopy
 from typing import Optional
 

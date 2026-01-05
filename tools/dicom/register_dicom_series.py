@@ -2,9 +2,7 @@
 import argparse
 import json
 import logging
-import sys
 import requests
-from urllib.parse import urljoin
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 DICOM-related Galaxy datatypes for a Galaxy–Orthanc hybrid workflow.
 
@@ -17,7 +16,7 @@ import os
 import logging
 import glob
 import json
-from typing import Optional
+
 
 from galaxy.datatypes.binary import Binary
 from galaxy.datatypes.data import Directory, Text
@@ -158,6 +157,7 @@ class DICOMSeries(Directory):
     def get_mime(self):
         return "application/json"
 
+    # Make it inline so preview can display the JSON manifest instead of downloading it. 
     is_binary = False
     display_behavior = "inline" 
 
@@ -211,17 +211,13 @@ class DICOMSeries(Directory):
             
             dataset.blurb = f"DICOM Series ({n_images} images)"
             
-            # Generate peek table
+            # Generate peek text (Galaxy Data.display_peek will wrap lines in a table)
             peek_lines = []
-            peek_lines.append('<table cellspacing="0" cellpadding="3">')
-            peek_lines.append(f'<tr><th>Study UID</th><td>{dataset.metadata.study_uid}</td></tr>')
-            peek_lines.append(f'<tr><th>Modality</th><td>{dataset.metadata.modality}</td></tr>')
-            peek_lines.append(f'<tr><th>Patient ID</th><td>{dataset.metadata.patient_id}</td></tr>')
-            peek_lines.append(f'<tr><th>Study Date</th><td>{dataset.metadata.study_date}</td></tr>')
-            peek_lines.append(f'<tr><th>Image Count</th><td>{n_images}</td></tr>')
-            peek_lines.append('</table>')
+            peek_lines.append(f"Study UID:  {dataset.metadata.study_uid}")
+            peek_lines.append(f"Series UID: {dataset.metadata.series_uid}")
+            peek_lines.append(f"Image Count:{n_images}")
             
-            dataset.peek = "".join(peek_lines)
+            dataset.peek = "\n".join(peek_lines)
         else:
             dataset.peek = "file does not exist"
             dataset.blurb = "file purged"
@@ -290,7 +286,7 @@ class DICOMReference(Text):
         We check for top-level 'dicomweb' and 'uids' keys.
         """
         try:
-            with open(filename, "r", encoding="utf-8") as fh:
+            with open(filename, encoding="utf-8") as fh:
                 data = json.load(fh)
         except Exception:
             return False
@@ -308,7 +304,7 @@ class DICOMReference(Text):
         This gives you searchable fields in Galaxy for references.
         """
         try:
-            with open(dataset.get_file_name(), "r", encoding="utf-8") as fh:
+            with open(dataset.get_file_name(), encoding="utf-8") as fh:
                 data = json.load(fh)
         except Exception:
             return
