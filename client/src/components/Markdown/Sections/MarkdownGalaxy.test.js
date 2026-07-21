@@ -1,12 +1,10 @@
 import { createTestingPinia } from "@pinia/testing";
 import { getLocalVue } from "@tests/vitest/helpers";
 import { mount } from "@vue/test-utils";
-import axios from "axios";
-import MockAdapter from "axios-mock-adapter";
 import flushPromises from "flush-promises";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useServerMock } from "@/api/client/__mocks__";
+import { HttpResponse, useServerMock } from "@/api/client/__mocks__";
 
 import MountTarget from "./MarkdownGalaxy.vue";
 
@@ -42,25 +40,33 @@ vi.mock("@/stores/workflowStore", () => ({
 }));
 
 const localVue = getLocalVue();
-const axiosMock = new MockAdapter(axios);
 const pinia = createTestingPinia({ createSpy: vi.fn, stubActions: false });
 
-function mapAxios(apiMap = {}) {
-    axiosMock.reset();
-    for (const [method, apiDetails] of Object.entries(apiMap)) {
-        for (const [path, response] of Object.entries(apiDetails)) {
-            axiosMock[method](path).reply(200, response);
-        }
-    }
-}
+let postRequests = [];
 
-function mountComponent(propsData = {}, apiMap = {}) {
-    mapAxios(apiMap);
-    server.use(
+beforeEach(() => {
+    postRequests = [];
+});
+
+function mountComponent(propsData = {}, options = {}) {
+    const handlers = [
         http.get("/api/histories/test_history_id", ({ response }) =>
             response(200).json({ id: "test_history_id", name: "history_name" }),
         ),
-    );
+    ];
+
+    if (options.enableHistoryPost) {
+        handlers.push(
+            http.untyped.post("/api/histories", async ({ request }) => {
+                const data = await request.json();
+                postRequests.push({ url: request.url, data });
+                return HttpResponse.json({});
+            }),
+        );
+    }
+
+    server.use(...handlers);
+
     return mount(MountTarget, {
         localVue,
         pinia,
@@ -88,11 +94,10 @@ describe("MarkdownContainer", () => {
         await wrapper.setProps({ content: `generate_galaxy_version(collapse="${collapse}")` });
         const link = wrapper.find("a");
         expect(link.text()).toBe(collapse);
-        const container = wrapper.find(".collapse");
-        expect(container.attributes("style")).toBe("display: none;");
+        const container = wrapper.find(".g-collapse");
+        expect(container.classes()).not.toContain("g-collapse-open");
         await link.trigger("click");
-        // After click, style attribute is removed
-        expect(container.attributes("style")).toBeFalsy();
+        expect(container.classes()).toContain("g-collapse-open");
     });
 
     it("Renders time stamp", async () => {
@@ -114,7 +119,7 @@ describe("MarkdownContainer", () => {
                 content: "history_link(history_id=test_history_id)",
             },
             {
-                onPost: { "/api/histories": {} },
+                enableHistoryPost: true,
             },
         );
         expect(wrapper.find("a").text()).toBe("Click to Import History: ...");
@@ -122,9 +127,9 @@ describe("MarkdownContainer", () => {
         const link = wrapper.find("a");
         expect(link.text()).toBe("Click to Import History: history_name");
         await link.trigger("click");
-        const postedData = JSON.parse(axiosMock.history.post[0].data);
-        expect(postedData.history_id).toBe("test_history_id");
         await flushPromises();
+        expect(postRequests.length).toBe(1);
+        expect(postRequests[0].data.history_id).toBe("test_history_id");
         const error = wrapper.find(".text-success");
         const message = error.find("span");
         expect(message.text()).toBe("Successfully Imported History: history_name!");

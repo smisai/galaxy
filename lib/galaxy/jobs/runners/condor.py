@@ -16,7 +16,6 @@ import os
 import subprocess
 from typing import (
     TYPE_CHECKING,
-    Union,
 )
 
 from galaxy import model
@@ -50,7 +49,7 @@ class CondorJobState(AsynchronousJobState):
         user_log: str,
         *,
         files_dir=None,
-        job_id: Union[str, None] = None,
+        job_id: str | None = None,
         job_file=None,
         output_file=None,
         error_file=None,
@@ -268,7 +267,6 @@ class CondorJobRunner(AsynchronousJobRunner[CondorJobState]):
                         new_watch_list.append(tcjs)
                     else:
                         cjs = tcjs
-                        break
                 self.watched = new_watch_list
                 self._stop_container(job_wrapper)
                 # self.watched.append(cjs)

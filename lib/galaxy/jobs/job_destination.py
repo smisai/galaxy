@@ -1,4 +1,3 @@
-import sys
 from dataclasses import (
     dataclass,
     field,
@@ -14,22 +13,20 @@ if TYPE_CHECKING:
     from galaxy.jobs import ResubmitConfigDict
     from galaxy.model import Job
 
-dataclass_kwargs = {"kw_only": True} if sys.version_info >= (3, 10) else {}
 
-
-@dataclass(**dataclass_kwargs, eq=False)
+@dataclass(kw_only=True, eq=False)
 class JobDestination:
     """
     Provides details about where a job runs
     """
 
-    id: Union[str, None] = None
-    url: Union[str, None] = None
-    tags: Union[list[str], None] = None
-    runner: Union[str, None] = None
+    id: str | None = None
+    url: str | None = None
+    tags: list[str] | None = None
+    runner: str | None = None
     legacy: bool = False
     converted: bool = False
-    shell: Union[str, None] = None
+    shell: str | None = None
     env: list[dict[str, Any]] = field(default_factory=list)
     resubmit: list["ResubmitConfigDict"] = field(default_factory=list)
     params: dict[str, Any] = field(default_factory=dict)

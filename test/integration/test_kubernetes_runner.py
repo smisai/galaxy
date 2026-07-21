@@ -11,12 +11,11 @@ import subprocess
 import tempfile
 import time
 from typing import (
-    Optional,
+    Literal,
     overload,
 )
 
 import pytest
-from typing_extensions import Literal
 
 from galaxy.model import Job
 from galaxy.tool_util.verify.wait import timeout_type
@@ -46,8 +45,7 @@ class KubeSetupConfigTuple(Config):
 
 
 def persistent_volume(path: str, persistent_volume_name: str) -> KubeSetupConfigTuple:
-    volume_yaml = string.Template(
-        """
+    volume_yaml = string.Template("""
 kind: PersistentVolume
 apiVersion: v1
 metadata:
@@ -71,16 +69,14 @@ spec:
           operator: NotIn
           values:
             - 'i-do-not-exist'
-    """
-    ).substitute(path=path, persistent_volume_name=persistent_volume_name)
+    """).substitute(path=path, persistent_volume_name=persistent_volume_name)
     with tempfile.NamedTemporaryFile(suffix="_persistent_volume.yml", mode="w", delete=False) as volume:
         volume.write(volume_yaml)
     return KubeSetupConfigTuple(path=volume.name)
 
 
 def persistent_volume_claim(persistent_volume_name: str, persistent_volum_claim_name: str) -> KubeSetupConfigTuple:
-    peristent_volume_claim_yaml = string.Template(
-        """
+    peristent_volume_claim_yaml = string.Template("""
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
@@ -93,18 +89,14 @@ spec:
     requests:
       storage: 2Gi
   storageClassName: manual
-"""
-    ).substitute(
-        persistent_volume_name=persistent_volume_name, persistent_volume_claim_name=persistent_volum_claim_name
-    )
+""").substitute(persistent_volume_name=persistent_volume_name, persistent_volume_claim_name=persistent_volum_claim_name)
     with tempfile.NamedTemporaryFile(suffix="_persistent_volume_claim.yml", mode="w", delete=False) as volume_claim:
         volume_claim.write(peristent_volume_claim_yaml)
     return KubeSetupConfigTuple(path=volume_claim.name)
 
 
 def job_config(jobs_directory: str) -> Config:
-    job_conf_template = string.Template(
-        """<job_conf>
+    job_conf_template = string.Template("""<job_conf>
     <plugins>
         <plugin id="local" type="runner" load="galaxy.jobs.runners.local:LocalJobRunner" workers="2"/>
         <plugin id="k8s" type="runner" load="galaxy.jobs.runners.kubernetes:KubernetesJobRunner">
@@ -144,8 +136,7 @@ def job_config(jobs_directory: str) -> Config:
         <tool id="create_2" destination="k8s_destination_walltime_short"/>
     </tools>
 </job_conf>
-"""
-    )
+""")
     job_conf_str = job_conf_template.substitute(
         jobs_directory=jobs_directory,
         tool_directory=TOOL_DIR,
@@ -183,9 +174,16 @@ class TestKubernetesIntegration(BaseJobEnvironmentIntegrationTestCase, MulledJob
         self.dataset_populator = KubernetesDatasetPopulator(self.galaxy_interactor)
 
     @classmethod
-    def setUpClass(cls) -> None:
-        # realpath for docker deployed in a VM on Mac, also done in driver_util.
-        cls.jobs_directory = os.path.realpath(tempfile.mkdtemp())
+    def tearDownClass(cls) -> None:
+        for claim in cls.persistent_volume_claims:
+            claim.teardown()
+        for volume in cls.persistent_volumes:
+            volume.teardown()
+        super().tearDownClass()
+
+    @classmethod
+    def handle_galaxy_config_kwds(cls, config) -> None:
+        cls.jobs_directory = os.path.realpath(cls._test_driver.mkdtemp())
         volumes = [
             (cls.jobs_directory, "jobs-directory-volume", "jobs-directory-claim"),
             (TOOL_DIR, "tool-directory-volume", "tool-directory-claim"),
@@ -200,18 +198,6 @@ class TestKubernetesIntegration(BaseJobEnvironmentIntegrationTestCase, MulledJob
             claim_obj.setup()
             cls.persistent_volume_claims.append(claim_obj)
         cls.job_config = job_config(jobs_directory=cls.jobs_directory)
-        super().setUpClass()
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        for claim in cls.persistent_volume_claims:
-            claim.teardown()
-        for volume in cls.persistent_volumes:
-            volume.teardown()
-        super().tearDownClass()
-
-    @classmethod
-    def handle_galaxy_config_kwds(cls, config) -> None:
         # TODO: implement metadata setting as separate job, as service or side-car
         super().handle_galaxy_config_kwds(config)
         config["jobs_directory"] = cls.jobs_directory
@@ -338,9 +324,9 @@ class TestKubernetesIntegration(BaseJobEnvironmentIntegrationTestCase, MulledJob
         def get_kubectl_logs(allow_wait: Literal[False]) -> str: ...
 
         @overload
-        def get_kubectl_logs(allow_wait: bool = True) -> Optional[str]: ...
+        def get_kubectl_logs(allow_wait: bool = True) -> str | None: ...
 
-        def get_kubectl_logs(allow_wait: bool = True) -> Optional[str]:
+        def get_kubectl_logs(allow_wait: bool = True) -> str | None:
             log_cmd = ["kubectl", "logs", "-l", f"job-name={external_id}"]
             p = subprocess.run(log_cmd, capture_output=True, text=True)
             if p.returncode:

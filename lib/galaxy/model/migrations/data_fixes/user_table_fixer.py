@@ -12,7 +12,6 @@ from galaxy.model import User
 
 
 class UsernameDeduplicator:
-
     def __init__(self, connection):
         self.connection = connection
 
@@ -51,7 +50,6 @@ class UsernameDeduplicator:
 
 
 class EmailDeduplicator:
-
     def __init__(self, connection):
         self.connection = connection
 
@@ -72,14 +70,12 @@ class EmailDeduplicator:
             self._deduplicate_users(email, duplicates)
 
     def _get_users_with_same_email(self, email: str):
-        sql = text(
-            """
+        sql = text("""
             SELECT u.id, EXISTS(SELECT h.id FROM history h WHERE h.user_id = u.id)
             FROM galaxy_user u
             WHERE u.email = :email
             ORDER BY u.create_time
-            """
-        )
+            """)
         params = {"email": email}
         return self.connection.execute(sql, params).all()
 

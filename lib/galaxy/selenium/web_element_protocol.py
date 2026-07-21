@@ -6,7 +6,6 @@ PlaywrightElement wrapper implement this protocol.
 """
 
 from typing import (
-    Optional,
     Protocol,
     runtime_checkable,
 )
@@ -50,7 +49,7 @@ class WebElementProtocol(Protocol):
         """Clear the text of an input or textarea element."""
         ...
 
-    def get_attribute(self, name: str) -> Optional[str]:
+    def get_attribute(self, name: str) -> str | None:
         """Get the value of an element attribute."""
         ...
 
@@ -62,15 +61,19 @@ class WebElementProtocol(Protocol):
         """Check if the element is enabled (not disabled)."""
         ...
 
+    def is_selected(self) -> bool:
+        """Check if a checkbox, radio, or option element is selected."""
+        ...
+
     def submit(self) -> None:
         """Submit a form element."""
         ...
 
-    def find_element(self, by: str = "id", value: Optional[str] = None) -> "WebElementProtocol":
+    def find_element(self, by: str = "id", value: str | None = None) -> "WebElementProtocol":
         """Find a child element within this element."""
         ...
 
-    def find_elements(self, by: str = "id", value: Optional[str] = None) -> list["WebElementProtocol"]:
+    def find_elements(self, by: str = "id", value: str | None = None) -> list["WebElementProtocol"]:
         """Find all child elements matching the locator within this element."""
         ...
 

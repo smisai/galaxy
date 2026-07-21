@@ -13,6 +13,10 @@ import RuleCollectionBuilder from "@/components/RuleCollectionBuilder.vue";
 import RulesDisplay from "@/components/RulesDisplay/RulesDisplay.vue";
 
 const props = defineProps({
+    id: {
+        type: String,
+        default: undefined,
+    },
     value: {
         type: Object,
     },
@@ -39,8 +43,11 @@ async function onEdit() {
         try {
             loading.value = true;
             loadError.value = undefined;
-            const collectionDetails = await fetchCollectionDetails({ hdca_id: props.target.id });
-            elements.value = collectionDetails;
+            const result = await fetchCollectionDetails({ hdca_id: props.target.id });
+            if (result.error) {
+                throw result.error;
+            }
+            elements.value = result.data;
             modal.value.show();
         } catch (e) {
             loadError.value = errorMessageAsString(e);
@@ -69,7 +76,7 @@ function onCancel() {
 <template>
     <div class="form-rules-edit">
         <RulesDisplay :input-rules="displayRules" />
-        <GButton title="Edit Rules" @click="onEdit">
+        <GButton :id="props.id" title="Edit Rules" @click="onEdit">
             <FontAwesomeIcon :icon="faEdit" />
             <span>Edit</span>
         </GButton>

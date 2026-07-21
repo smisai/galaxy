@@ -27,7 +27,7 @@ cat <<EOF
 This wrapper script largely serves as a point documentation and convenience for
 running Galaxy's Python tests. All Python tests shipped with Galaxy can be run with
 pytest directly. Galaxy's client unit tests can be run with ``make client-test``
-or ``yarn`` directly as documented in detail in ``client/README.md``.
+or ``pnpm`` directly as documented in detail in ``client/README.md``.
 
 The main test types are as follows:
 
@@ -46,8 +46,7 @@ The main test types are as follows:
    quickly test just a component or a few components of Galaxy's backend code.
 - Selenium: These are full stack tests meant to test the Galaxy UI with real
    browsers and are located in lib/galaxy_test/selenium.
-- ToolShed: These are web tests that use the older Python web testing
-   framework twill to test ToolShed related functionality. These are
+- ToolShed: These are tests that test ToolShed related functionality. These are
    located in lib/tool_shed/test.
 
 Python testing is done via pytest. Specific tests can be selected
@@ -93,8 +92,15 @@ these end-to-end tests to use a specific user by copying and updating the sample
     cp lib/galaxy_test/selenium/jupyter/galaxy_selenium_context.yml.sample ./galaxy_selenium_context.yml
     vi galaxy_selenium_context.yml  # edit user and password, target galaxy server, etc..
 
+Config keys map to environment variables:
+    local_galaxy_url    -> GALAXY_TEST_SELENIUM_URL
+    login_email         -> GALAXY_TEST_SELENIUM_USER_EMAIL
+    login_password      -> GALAXY_TEST_SELENIUM_USER_PASSWORD
+    admin_api_key       -> GALAXY_TEST_SELENIUM_ADMIN_API_KEY
+    selenium_galaxy_url -> GALAXY_TEST_EXTERNAL_FROM_SELENIUM
+
 If you've setup this config file, the file can be used with any end-to-end/selenium/playwright test by
-setting GALAXY_TEST_END_TO_END_CONFIG when calling pytest or run_test.sh. So for example
+setting GALAXY_TEST_END_TO_END_CONFIG when calling pytest or run_tests.sh. So for example
 the last line in that previous example run could become:
 
     GALAXY_TEST_END_TO_END_CONFIG=./galaxy_selenium_context.yml pytest lib/galaxy_test/selenium/test_workflow_editor.py::TestWorkflowEditor::test_data_input
@@ -148,7 +154,7 @@ Selenium can also be setup a remote service - to target a service set
 GALAXY_TEST_SELENIUM_REMOTE to 1. The target service may be configured
 with GALAXY_TEST_SELENIUM_REMOTE_PORT and
 GALAXY_TEST_SELENIUM_REMOTE_HOST. By default Galaxy will assume the
-remote service being targetted is CHROME - but this can be overridden
+remote service being targeted is CHROME - but this can be overridden
 with GALAXY_TEST_SELENIUM_BROWSER.
 
 In this remote mode, please ensure that GALAXY_TEST_HOST is set to a
@@ -245,7 +251,7 @@ GALAXY_TEST_VERBOSE_ERRORS      Enable more verbose errors during API tests.
 GALAXY_TEST_UPLOAD_ASYNC        Upload tool test inputs asynchronously (may
                                 overwhelm sqlite database).
 GALAXY_TEST_RAW_DIFF            Don't slice up tool test diffs to keep output
-                                managable - print all output. (default off)
+                                manageable - print all output. (default off)
 GALAXY_TEST_DEFAULT_WAIT        Max time allowed for a tool test before Galaxy
                                 gives up (default 86400) - tools may define a
                                 maxseconds attribute to extend this.
@@ -287,12 +293,14 @@ TOOL_SHED_TEST_TMP_DIR          Defaults to random /tmp directory - place for
                                 tool shed test server files to be placed.
 TOOL_SHED_TEST_OMIT_GALAXY      Do not launch a Galaxy server for tool shed
                                 testing.
-GALAXY_TEST_DISABLE_ACCESS_LOG  Do not log access messages
+GALAXY_TEST_DISABLE_ACCESS_LOG  Do not log access messages.
+GALAXY_TEST_LOG_LEVEL           Set Galaxy server log level for tests
+                                (default: DEBUG). E.g. WARNING to reduce output.
 GALAXY_TEST_AXE_SCRIPT_URL      URL of aXe script to use for accessibility testing.
-GALAXY_TEST_SKIP_AXE            Set this to '1' to skip aXe accessibilty testing when
+GALAXY_TEST_SKIP_AXE            Set this to '1' to skip aXe accessibility testing when
                                 running selenium tests.
 
-We're tyring annotate API and Selenium tests with the resources they require
+We're trying annotate API and Selenium tests with the resources they require
 and create to make them more appropriate to run on established Galaxy instances.
 The following variables can be used to disable certain classes of properly tests.
 
@@ -326,6 +334,10 @@ fi
 xunit_report_file=""
 structured_data_report_file=""
 structured_data_html=0
+# Detect blocking I/O in async handlers during tests via aiocop
+# (https://github.com/Feverup/aiocop).  Set to 0 to disable.
+GALAXY_TEST_AIOCOP=${GALAXY_TEST_AIOCOP:-1}
+export GALAXY_TEST_AIOCOP
 SKIP_CLIENT_BUILD=${GALAXY_SKIP_CLIENT_BUILD:-1}
 if [ "$SKIP_CLIENT_BUILD" = "1" ]; then
     skip_client_build="--skip-client-build"
@@ -403,6 +415,7 @@ do
           export GALAXY_TEST_DRIVER_BACKEND
           report_file="./run_playwright_tests.html"
           skip_client_build=""
+          install_playwright_browers=(chromium)
           if [ $# -gt 1 ]; then
               selenium_script=$2
               shift 2
@@ -543,6 +556,7 @@ do
             --ignore lib/tool_shed/webapp/controllers
             --ignore=lib/tool_shed/webapp/model/migrations/alembic/'
           generate_cwl_conformance_tests=1
+          install_playwright_browers=(chromium firefox)
           if [ $# -gt 1 ]; then
               unit_extra="$unit_extra $2"
               shift 2
@@ -626,6 +640,10 @@ fi
 
 setup_python
 
+if [ -n "$install_playwright_browers" ]; then
+    playwright install "${install_playwright_browers[@]}"
+fi
+
 if [ -n "$framework_test" ] || [ -n "$data_managers_test" ] ; then
     if [ -n "$test_id" ]; then
         selector="-k $test_id"
@@ -673,7 +691,7 @@ if [ -n "$generate_cwl_conformance_tests" ]; then
 fi
 export GALAXY_TEST_TOOL_CONF
 if [ "$coverage_arg" = '--with-coverage' ]; then
-    coverage_arg="--cov-report xml --cov-report term --cov=lib"
+    coverage_arg="--cov-report xml --cov=lib"
 fi
 if [ -n "$marker" ]; then
     marker_args=(-m "$marker")
@@ -684,6 +702,9 @@ args=(-v $debug $structured_data_args --html "$report_file" --self-contained-htm
 "$test_script" "${args[@]}"
 exit_status=$?
 echo "Testing complete. HTML report is in \"$report_file\"." 1>&2
+if [ -n "$coverage_arg" ] && [ -f .coverage ]; then
+    echo "Total coverage: $(coverage report --format=total)%" 1>&2
+fi
 if [ "$structured_data_html" = '1' ]; then
    python scripts/tests_markdown.py --output_path "${structured_data_report_file%.json}.html" "$structured_data_report_file"
 fi

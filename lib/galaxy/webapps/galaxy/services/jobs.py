@@ -2,9 +2,7 @@ import logging
 from enum import Enum
 from typing import (
     Any,
-    Optional,
     TYPE_CHECKING,
-    Union,
 )
 
 from pydantic import (
@@ -16,6 +14,7 @@ from galaxy import (
     exceptions,
     model,
 )
+from galaxy.celery.helpers import async_task_summary
 from galaxy.celery.tasks import queue_jobs
 from galaxy.managers import hdas
 from galaxy.managers.base import security_check
@@ -29,11 +28,11 @@ from galaxy.managers.jobs import (
     JobSearch,
     view_show_job,
 )
+from galaxy.managers.tool_source import get_or_create_tool_source
 from galaxy.managers.tools import ToolRunReference
 from galaxy.model import (
     Job,
     ToolRequest,
-    ToolSource as ToolSourceModel,
 )
 from galaxy.schema.fields import (
     DecodedDatabaseIdField,
@@ -57,9 +56,9 @@ from galaxy.tool_util.parameters import (
     RelaxedRequestToolState,
     RequestToolState,
     strictify,
+    ToolParameterBundleModel,
 )
 from galaxy.webapps.galaxy.services.base import (
-    async_task_summary,
     ServiceBase,
 )
 from .tools import validate_tool_for_running
@@ -74,21 +73,25 @@ log = logging.getLogger(__name__)
 
 
 class JobRequest(BaseModel):
-    tool_id: Optional[str] = Field(default=None, title="tool_id", description="TODO")
-    tool_uuid: Optional[str] = Field(default=None, title="tool_uuid", description="TODO")
-    tool_version: Optional[str] = Field(default=None, title="tool_version", description="TODO")
-    history_id: Optional[DecodedDatabaseIdField] = Field(default=None, title="history_id", description="TODO")
-    inputs: Optional[dict[str, Any]] = Field(default_factory=lambda: {}, title="Inputs", description="TODO")
+    tool_id: str | None = Field(default=None, title="tool_id", description="TODO")
+    tool_uuid: str | None = Field(default=None, title="tool_uuid", description="TODO")
+    tool_version: str | None = Field(default=None, title="tool_version", description="TODO")
+    history_id: DecodedDatabaseIdField | None = Field(default=None, title="history_id", description="TODO")
+    inputs: dict[str, Any] | None = Field(default_factory=lambda: {}, title="Inputs", description="TODO")
     strict: bool = Field(
         default=True,
         title="Strict",
         description="Turn on strict validation of the inputs that drops support for some inconsistent legacy behavior.",
     )
-    use_cached_jobs: Optional[bool] = Field(default=None, title="use_cached_jobs")
-    rerun_remap_job_id: Optional[DecodedDatabaseIdField] = Field(
+    use_cached_jobs: bool | None = Field(default=None, title="use_cached_jobs")
+    rerun_remap_job_id: DecodedDatabaseIdField | None = Field(
         default=None, title="rerun_remap_job_id", description="TODO"
     )
     send_email_notification: bool = Field(default=False, title="Send Email Notification", description="TODO")
+    preferred_object_store_id: str | None = Field(default=None, title="Preferred Object Store ID")
+    tags: list[str] | None = Field(default=None, title="Tags")
+    data_manager_mode: str | None = Field(default=None, title="Data Manager Mode")
+    credentials_context: list[dict[str, Any]] | None = Field(default=None, title="Credentials Context")
 
 
 class JobCreateResponse(BaseModel):
@@ -176,8 +179,8 @@ class JobsService(ServiceBase):
         self,
         view: JobIndexViewEnum,
         user_details: bool,
-        decoded_user_id: Optional[DecodedDatabaseIdField],
-        trans_user_id: Optional[int],
+        decoded_user_id: DecodedDatabaseIdField | None,
+        trans_user_id: int | None,
     ):
         """Verify admin-only resources are not being accessed."""
         if view == JobIndexViewEnum.admin_job_list:
@@ -190,8 +193,8 @@ class JobsService(ServiceBase):
     def get_job(
         self,
         trans: ProvidesUserContext,
-        job_id: Optional[int] = None,
-        dataset_id: Optional[int] = None,
+        job_id: int | None = None,
+        dataset_id: int | None = None,
         hda_ldda: str = "hda",
     ) -> Job:
         if job_id is not None:
@@ -199,7 +202,7 @@ class JobsService(ServiceBase):
         elif dataset_id is not None:
             # Following checks dataset accessible
             if hda_ldda == "hda":
-                dataset_instance: Union[HistoryDatasetAssociation, LibraryDatasetDatasetAssociation] = (
+                dataset_instance: HistoryDatasetAssociation | LibraryDatasetDatasetAssociation = (
                     self.hda_manager.get_accessible(id=dataset_id, user=trans.user)
                 )
             else:
@@ -241,47 +244,53 @@ class JobsService(ServiceBase):
     def create(self, trans: ProvidesHistoryContext, job_request: JobRequest) -> JobCreateResponse:
         tool_run_reference = ToolRunReference(job_request.tool_id, job_request.tool_uuid, job_request.tool_version)
         tool = validate_tool_for_running(trans, tool_run_reference)
-        history_id = job_request.history_id
         target_history = None
-        if history_id is not None:
+        if (history_id := job_request.history_id) is not None:
             target_history = self.history_manager.get_owned(history_id, trans.user, current_history=trans.history)
         inputs = job_request.inputs
         strict = job_request.strict
+        if tool.parameters is None:
+            raise exceptions.RequestParameterInvalidException(f"Tool {tool.id} has no parameters defined")
+        parameter_bundle = ToolParameterBundleModel(parameters=tool.parameters)
         if not strict:
             relaxed_request_state = RelaxedRequestToolState(inputs or {})
-            relaxed_request_state.validate(tool, f"{tool.id} (relaxed request model)")
-            request_state = strictify(relaxed_request_state, tool)
+            relaxed_request_state.validate(parameter_bundle, f"{tool.id} (relaxed request model)")
+            request_state = strictify(relaxed_request_state, parameter_bundle)
         else:
             request_state = RequestToolState(inputs or {})
-        request_state.validate(tool, f"{tool.id} (request model)")
-        request_internal_state = decode(request_state, tool, trans.security.decode_id)
+        request_state.validate(parameter_bundle, f"{tool.id} (request model)")
+        request_internal_state = decode(request_state, parameter_bundle, trans.security.decode_id)
+        # request_internal records absent inputs as absent; static defaults (incl. url_default
+        # data inputs) are filled later, at dereference/job_internal time (see fill_static_defaults).
+        request_internal_state.validate(parameter_bundle, f"{tool.id} (request internal model)")
+        sa_session = trans.sa_session
+        tool_source_model = get_or_create_tool_source(sa_session, tool)
         tool_request = ToolRequest()
-        # TODO: hash and such...
-        tool_source_model = ToolSourceModel(
-            source=[p.model_dump() for p in tool.parameters],
-            hash="TODO",
-        )
         tool_request.request = request_internal_state.input_state
         tool_request.tool_source = tool_source_model
         tool_request.state = ToolRequest.states.NEW
         tool_request.history = target_history
-        sa_session = trans.sa_session
-        sa_session.add(tool_source_model)
         sa_session.add(tool_request)
         sa_session.commit()
         tool_request_id = tool_request.id
         tool_source = ToolSource(
-            raw_tool_source=tool.tool_source.to_string(),
+            raw_tool_source=tool_source_model.source,
             tool_dir=tool.tool_dir,
-            tool_source_class=type(tool.tool_source).__name__,
+            tool_source_class=tool_source_model.source_class,
+            tool_id=tool.id,
         )
         task_request = QueueJobs(
             user=trans.async_request_user,
-            history_id=target_history and target_history.id,
             tool_source=tool_source,
             tool_request_id=tool_request_id,
             use_cached_jobs=job_request.use_cached_jobs or False,
             rerun_remap_job_id=job_request.rerun_remap_job_id,
+            preferred_object_store_id=job_request.preferred_object_store_id,
+            tags=job_request.tags,
+            data_manager_mode=job_request.data_manager_mode,
+            send_email_notification=job_request.send_email_notification,
+            credentials_context=job_request.credentials_context,
+            dynamic_tool_id=tool.dynamic_tool.id if tool.dynamic_tool else None,
         )
         result = queue_jobs.delay(request=task_request)
         return JobCreateResponse(

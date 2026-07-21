@@ -9,7 +9,6 @@ import time
 from string import Template
 from typing import (
     ClassVar,
-    Union,
 )
 from unittest.mock import (
     _patch,
@@ -111,7 +110,7 @@ class AbstractTestCases:
         container_name: ClassVar[str]
         backend_config_file: ClassVar[str]
         provider_name: ClassVar[str]
-        saved_env_vars: ClassVar[dict[str, Union[str, None]]]
+        saved_env_vars: ClassVar[dict[str, str | None]]
         config_patcher: ClassVar[_patch]
 
         @classmethod
@@ -260,6 +259,24 @@ class TestGalaxyOIDCLoginIntegration(AbstractTestCases.BaseKeycloakIntegrationTe
         response = self._get("users/current")
         self._assert_status_code_is(response, 200)
         assert response.json()["email"] == "gxyuser@galaxy.org"
+
+    def test_oidc_login_username_sanitization(self):
+        """Test that OIDC usernames with special characters are properly sanitized."""
+        _, response = self._login_via_keycloak("rincewind_test", KEYCLOAK_TEST_PASSWORD, save_cookies=True)
+
+        response = self._get("users/current")
+        self._assert_status_code_is(response, 200)
+        assert response.json()["email"] == "rincewind@galaxy.org"
+
+        username = response.json()["username"]
+        from galaxy.security.validate_user_input import validate_publicname_str
+
+        error = validate_publicname_str(username)
+        assert error == "", f"OIDC-created username '{username}' is invalid: {error}"
+        assert "(" not in username, f"Username '{username}' should not contain parentheses"
+        assert ")" not in username, f"Username '{username}' should not contain parentheses"
+        assert " " not in username, f"Username '{username}' should not contain spaces"
+        assert username == username.lower(), f"Username '{username}' should be lowercase"
 
     def test_oidc_login_repeat_no_notification(self):
         """
@@ -489,11 +506,23 @@ class TestFixedDelegatedAuthIntegration(AbstractTestCases.BaseKeycloakIntegratio
         config["enable_oidc"] = True
         config["oidc_config_file"] = os.path.join(os.path.dirname(__file__), "oidc_config.xml")
         config["oidc_backends_config_file"] = cls.backend_config_file
+        config["enable_account_interface"] = False
+        config["enable_notification_system"] = True
         # fixed_delegated_auth will be automatically computed as True when:
         # - There is exactly one OIDC provider (keycloak)
         # - There are no other authenticators configured
         # Use empty auth_config_file to ensure no authenticators are loaded
         config["auth_config_file"] = os.path.join(os.path.dirname(__file__), "auth_conf_empty.xml")
+
+    def _get_profile_update_notifications(self):
+        response = self._get("notifications")
+        self._assert_status_code_is(response, 200)
+        notifications = response.json()
+        return [
+            n
+            for n in notifications
+            if n.get("source") == "oidc" and n.get("content", {}).get("subject") == "Profile updated"
+        ]
 
     def test_fixed_delegated_auth_with_existing_user_auto_associates(self):
         """
@@ -504,9 +533,9 @@ class TestFixedDelegatedAuthIntegration(AbstractTestCases.BaseKeycloakIntegratio
         - if fixed_delegated_auth: user = existing_user
         - redirect to login_redirect_url (root)
         """
-        # Pre-create a Galaxy user with matching email
+        # Pre-create a Galaxy user with matching email and username
         sa_session = self._app.model.session
-        user = model.User(email="gxyuser_fixed_auth@galaxy.org", username="fixed_auth_user")
+        user = model.User(email="gxyuser_fixed_auth@galaxy.org", username="gxyuser_fixed_auth")
         user.set_password_cleartext("test123")
         sa_session.add(user)
         try:
@@ -529,7 +558,11 @@ class TestFixedDelegatedAuthIntegration(AbstractTestCases.BaseKeycloakIntegratio
         response = self._get("users/current")
         self._assert_status_code_is(response, 200)
         assert response.json()["email"] == "gxyuser_fixed_auth@galaxy.org"
-        assert response.json()["username"] == "fixed_auth_user"
+        assert response.json()["username"] == "gxyuser_fixed_auth"
+        # Clear any existing profile notifications before checking the re-sync login behavior.
+        notifications = self._get_profile_update_notifications()
+        for notification in notifications:
+            self._delete(f"notifications/{notification['id']}")
 
     def test_fixed_delegated_auth_with_new_user_creates_account(self):
         """
@@ -551,6 +584,136 @@ class TestFixedDelegatedAuthIntegration(AbstractTestCases.BaseKeycloakIntegratio
         response = self._get("users/current")
         self._assert_status_code_is(response, 200)
         assert response.json()["email"] == "gxyuser_brand_new@galaxy.org"
+
+    def test_fixed_delegated_auth_updates_profile_on_association(self):
+        """
+        Test: fixed_delegated_auth=True, existing user with matching email but different username
+        Expected: Username is updated from OIDC and notification is created
+        """
+        # Pre-create a Galaxy user with matching email but a different username
+        sa_session = self._app.model.session
+        user = model.User(email="gxyuser_fixed_auth@galaxy.org", username="stale_username")
+        user.set_password_cleartext("test123")
+        sa_session.add(user)
+        try:
+            sa_session.commit()
+        except Exception:
+            pass
+
+        # Login via OIDC without being logged into Galaxy first (association)
+        _, response = self._login_via_keycloak("gxyuser_fixed_auth", KEYCLOAK_TEST_PASSWORD, save_cookies=True)
+
+        parsed_url = parse.urlparse(response.url)
+        assert "user/external_ids" not in parsed_url.path
+
+        # Verify user is logged in and username is updated to OIDC preferred username
+        response = self._get("users/current")
+        self._assert_status_code_is(response, 200)
+        assert response.json()["email"] == "gxyuser_fixed_auth@galaxy.org"
+        assert response.json()["username"] == "gxyuser_fixed_auth"
+
+        notifications = self._get_profile_update_notifications()
+        assert notifications, "Expected profile update notification"
+        message = notifications[0]["content"]["message"]
+        assert "public name" in message
+
+    def test_fixed_delegated_auth_updates_profile_on_repeat_login(self):
+        """
+        Test: fixed_delegated_auth=True, user associated, local username changes, next login re-syncs
+        Expected: Username is updated from OIDC and notification is created
+        """
+        # Pre-create a Galaxy user with matching email and username
+        sa_session = self._app.model.session
+        user = model.User(email="gxyuser_fixed_auth@galaxy.org", username="gxyuser_fixed_auth")
+        user.set_password_cleartext("test123")
+        sa_session.add(user)
+        try:
+            sa_session.commit()
+        except Exception:
+            pass
+
+        # First login to associate
+        _, response = self._login_via_keycloak("gxyuser_fixed_auth", KEYCLOAK_TEST_PASSWORD, save_cookies=True)
+        parsed_url = parse.urlparse(response.url)
+        assert "user/external_ids" not in parsed_url.path
+
+        # Clear any existing profile notifications before checking the re-sync login behavior.
+        notifications = self._get_profile_update_notifications()
+        for notification in notifications:
+            self._delete(f"notifications/{notification['id']}")
+
+        # Clear any transactional state before mutating the user
+        sa_session.rollback()
+        user = sa_session.query(model.User).filter_by(email="gxyuser_fixed_auth@galaxy.org").one()
+
+        # Mutate local username after association
+        user.username = "stale_username"
+        sa_session.add(user)
+        sa_session.commit()
+
+        # Second login should re-sync username
+        _, response = self._login_via_keycloak("gxyuser_fixed_auth", KEYCLOAK_TEST_PASSWORD, save_cookies=True)
+        parsed_url = parse.urlparse(response.url)
+        assert "user/external_ids" not in parsed_url.path
+
+        response = self._get("users/current")
+        self._assert_status_code_is(response, 200)
+        assert response.json()["username"] == "gxyuser_fixed_auth"
+
+        notifications = self._get_profile_update_notifications()
+        assert notifications, "Expected profile update notification"
+
+    def test_fixed_delegated_auth_profile_update_notification_once_per_change(self):
+        """
+        Test: fixed_delegated_auth=True, profile update notification is shown once per actual profile change.
+        Expected:
+        - Login with changed username -> one profile update notification
+        - Notification accepted (deleted), login again with no new change -> no new notification
+        - Local username changed again, login -> profile update notification appears again
+        """
+        sa_session = self._app.model.session
+        user = model.User(email="gxyuser_fixed_auth@galaxy.org", username="stale_username")
+        user.set_password_cleartext("test123")
+        sa_session.add(user)
+        try:
+            sa_session.commit()
+        except Exception:
+            pass
+
+        # First login applies username change from OIDC and creates one profile update notification.
+        _, response = self._login_via_keycloak("gxyuser_fixed_auth", KEYCLOAK_TEST_PASSWORD, save_cookies=True)
+        parsed_url = parse.urlparse(response.url)
+        assert "user/external_ids" not in parsed_url.path
+
+        notifications = self._get_profile_update_notifications()
+        assert len(notifications) == 1
+        assert notifications[0]["content"]["message"].endswith("public name.")
+
+        # Accept/dismiss the message.
+        self._delete(f"notifications/{notifications[0]['id']}")
+        notifications = self._get_profile_update_notifications()
+        assert len(notifications) == 0
+
+        # Second login with no local changes should not create a new profile update notification.
+        _, response = self._login_via_keycloak("gxyuser_fixed_auth", KEYCLOAK_TEST_PASSWORD, save_cookies=True)
+        parsed_url = parse.urlparse(response.url)
+        assert "user/external_ids" not in parsed_url.path
+        notifications = self._get_profile_update_notifications()
+        assert len(notifications) == 0
+
+        # Change local username again, then login should re-sync and generate the notification again.
+        sa_session.rollback()
+        user = sa_session.query(model.User).filter_by(email="gxyuser_fixed_auth@galaxy.org").one()
+        user.username = "stale_username_again"
+        sa_session.add(user)
+        sa_session.commit()
+
+        _, response = self._login_via_keycloak("gxyuser_fixed_auth", KEYCLOAK_TEST_PASSWORD, save_cookies=True)
+        parsed_url = parse.urlparse(response.url)
+        assert "user/external_ids" not in parsed_url.path
+        notifications = self._get_profile_update_notifications()
+        assert len(notifications) == 1
+        assert notifications[0]["content"]["message"].endswith("public name.")
 
 
 class TestWithoutFixedDelegatedAuth(AbstractTestCases.BaseKeycloakIntegrationTestCase):

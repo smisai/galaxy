@@ -1,9 +1,7 @@
+from collections.abc import Callable
 from typing import (
     Any,
-    Callable,
     cast,
-    Optional,
-    Union,
 )
 
 from sqlalchemy.orm import scoped_session
@@ -47,7 +45,7 @@ from galaxy.security.vault import UserVaultWrapper
 from galaxy.structured_app import StructuredApp
 from galaxy.tool_util.deps.requirements import CredentialsRequirement
 
-GetToolCredentialsDefinition = Callable[[User, str, str, str, str], Optional[CredentialsRequirement]]
+GetToolCredentialsDefinition = Callable[[User, str, str, str, str], CredentialsRequirement | None]
 
 
 class CredentialsService:
@@ -68,11 +66,11 @@ class CredentialsService:
         self,
         trans: ProvidesUserContext,
         user_id: FlexibleUserIdType,
-        source_type: Optional[SOURCE_TYPE] = None,
-        source_id: Optional[str] = None,
-        source_version: Optional[str] = None,
+        source_type: SOURCE_TYPE | None = None,
+        source_id: str | None = None,
+        source_version: str | None = None,
         include_definition: bool = False,
-    ) -> Union[UserServiceCredentialsListResponse, ExtendedUserCredentialsListResponse]:
+    ) -> UserServiceCredentialsListResponse | ExtendedUserCredentialsListResponse:
         """Lists all credentials the user has provided (credentials themselves are not included)."""
         user = self._ensure_user_access(trans, user_id)
         return self._list_user_credentials(user, source_type, source_id, source_version, include_definition)
@@ -150,8 +148,8 @@ class CredentialsService:
         self,
         trans: ProvidesUserContext,
         user_id: FlexibleUserIdType,
-        user_credentials_id: Optional[DecodedDatabaseIdField] = None,
-        group_id: Optional[DecodedDatabaseIdField] = None,
+        user_credentials_id: DecodedDatabaseIdField | None = None,
+        group_id: DecodedDatabaseIdField | None = None,
     ) -> None:
         """Deletes a specific credential group or all credentials for a specific service."""
         user = self._ensure_user_access(trans, user_id)
@@ -240,7 +238,7 @@ class CredentialsService:
         tool_version: str,
         service_name: str,
         service_version: str,
-    ) -> Optional[CredentialsRequirement]:
+    ) -> CredentialsRequirement | None:
         tool = self.app.toolbox.get_tool(tool_id, tool_version)
         if not tool:
             raise ObjectNotFound(f"Could not find tool with id '{tool_id}'.")
@@ -259,11 +257,11 @@ class CredentialsService:
     def _list_user_credentials(
         self,
         user: User,
-        source_type: Optional[SOURCE_TYPE] = None,
-        source_id: Optional[str] = None,
-        source_version: Optional[str] = None,
+        source_type: SOURCE_TYPE | None = None,
+        source_id: str | None = None,
+        source_version: str | None = None,
         include_definition: bool = False,
-    ) -> Union[UserServiceCredentialsListResponse, ExtendedUserCredentialsListResponse]:
+    ) -> UserServiceCredentialsListResponse | ExtendedUserCredentialsListResponse:
         existing_user_credentials = self.credentials_manager.get_user_credentials(
             user.id, source_type, source_id, source_version
         )
@@ -272,14 +270,30 @@ class CredentialsService:
 
         for user_credentials, credentials_group, credential in existing_user_credentials:
             cred_id = user_credentials.id
-            definition = self._get_credentials_definition(
-                user,
-                cast(SOURCE_TYPE, user_credentials.source_type),
-                user_credentials.source_id,
-                user_credentials.source_version,
-                user_credentials.name,
-                user_credentials.version,
-            )
+            definition = None
+            try:
+                definition = self._get_credentials_definition(
+                    user,
+                    cast(SOURCE_TYPE, user_credentials.source_type),
+                    user_credentials.source_id,
+                    user_credentials.source_version,
+                    user_credentials.name,
+                    user_credentials.version,
+                )
+            except ObjectNotFound:
+                # Tool was removed or is no longer available - create a minimal fallback definition
+                # using the stored credential data so the UI can still display the credentials
+                if include_definition:
+                    definition = CredentialsRequirement(
+                        name=user_credentials.name,
+                        version=user_credentials.version,
+                        description="",
+                        label="",
+                        optional=False,
+                        variables=[],
+                        secrets=[],
+                    )
+
             user_credentials_dict.setdefault(
                 cred_id,
                 {
@@ -295,7 +309,7 @@ class CredentialsService:
                 },
             )
 
-            if include_definition:
+            if include_definition and definition:
                 user_credentials_dict[cred_id]["definition"] = {
                     "name": definition.name,
                     "version": definition.version,
@@ -437,8 +451,7 @@ class CredentialsService:
 
         user_cred_map, group_map, cred_map = self.credentials_manager.index_credentials(existing_user_credentials)
 
-        user_credentials = user_cred_map.get((service_name, service_version))
-        if user_credentials:
+        if user_credentials := user_cred_map.get((service_name, service_version)):
             user_credentials_id = user_credentials.id
         else:
             user_credentials_id = self.credentials_manager.add_user_credentials(

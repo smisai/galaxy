@@ -1,8 +1,4 @@
 import logging
-from typing import (
-    Optional,
-    Union,
-)
 
 from galaxy import util
 from galaxy.exceptions import (
@@ -82,11 +78,11 @@ class LibraryFoldersService(ServiceBase):
         self,
         trans,
         folder_id: LibraryFolderDatabaseIdField,
-        scope: Optional[LibraryPermissionScope] = LibraryPermissionScope.current,
+        scope: LibraryPermissionScope | None = LibraryPermissionScope.current,
         page: int = 1,
         page_limit: int = 10,
-        query: Optional[str] = None,
-    ) -> Union[LibraryFolderCurrentPermissions, LibraryAvailablePermissions]:
+        query: str | None = None,
+    ) -> LibraryFolderCurrentPermissions | LibraryAvailablePermissions:
         """
         Load all permissions for the given folder id and return it.
 
@@ -116,7 +112,8 @@ class LibraryFoldersService(ServiceBase):
         elif scope == LibraryPermissionScope.available:
             roles, total_roles = trans.app.security_agent.get_valid_roles(trans, folder, query, page, page_limit)
 
-            private_role_emails = get_private_role_user_emails_dict(trans.sa_session)
+            role_ids = {r.id for r in roles}
+            private_role_emails = get_private_role_user_emails_dict(trans.sa_session, role_ids=role_ids)
             return_roles = []
             for role in roles:
                 displayed_name = private_role_emails.get(role.id, role.name)
@@ -228,7 +225,7 @@ class LibraryFoldersService(ServiceBase):
         return LibraryFolderCurrentPermissions(**current_permissions)
 
     def delete(
-        self, trans, folder_id: LibraryFolderDatabaseIdField, undelete: Optional[bool] = False
+        self, trans, folder_id: LibraryFolderDatabaseIdField, undelete: bool | None = False
     ) -> LibraryFolderDetails:
         """
         Mark the folder with the given ``encoded_folder_id`` as `deleted`

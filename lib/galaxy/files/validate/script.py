@@ -12,11 +12,6 @@ import argparse
 import os
 import sys
 import traceback
-from typing import (
-    Dict,
-    List,
-    Optional,
-)
 
 import yaml
 
@@ -95,7 +90,7 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def find_galaxy_config(config_file: Optional[str] = None) -> Optional[str]:
+def find_galaxy_config(config_file: str | None = None) -> str | None:
     """Find the Galaxy configuration file"""
     if config_file and os.path.exists(config_file):
         return config_file
@@ -116,7 +111,7 @@ def find_galaxy_config(config_file: Optional[str] = None) -> Optional[str]:
     return None
 
 
-def load_file_sources_config(config_path: str) -> List[Dict]:
+def load_file_sources_config(config_path: str) -> list[dict]:
     """Load file sources configuration from YAML file"""
     try:
         with open(config_path) as f:
@@ -132,7 +127,7 @@ def load_file_sources_config(config_path: str) -> List[Dict]:
 
 
 def validate_file_source_config(
-    file_source_config: Dict,
+    file_source_config: dict,
     plugin_loader: FileSourcePluginLoader,
     file_sources_config: FileSourcePluginsConfig,
     verbose: bool = False,

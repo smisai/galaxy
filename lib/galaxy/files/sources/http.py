@@ -1,7 +1,6 @@
 import logging
 import re
 import urllib.request
-from typing import Union
 
 from galaxy.files.models import (
     BaseFileSourceConfiguration,
@@ -27,8 +26,8 @@ log = logging.getLogger(__name__)
 class HTTPFileSourceTemplateConfiguration(BaseFileSourceTemplateConfiguration):
     # `url_regex` is not templated because it needs to be set at initialization with no RuntimeContext available.
     url_regex: str = r"^https?://|^ftp://"
-    http_headers: Union[dict[str, str], TemplateExpansion] = {}
-    fetch_url_allowlist: Union[list[IpAllowedListEntryT], TemplateExpansion] = []
+    http_headers: dict[str, str] | TemplateExpansion = {}
+    fetch_url_allowlist: list[IpAllowedListEntryT] | TemplateExpansion = []
 
 
 class HTTPFileSourceConfiguration(BaseFileSourceConfiguration):
@@ -65,8 +64,17 @@ class HTTPFilesSource(BaseFilesSource[HTTPFileSourceTemplateConfiguration, HTTPF
     ):
         config = context.config
         req = urllib.request.Request(source_path, headers=config.http_headers)
+        try:
+            page = urllib.request.urlopen(req, timeout=DEFAULT_SOCKET_TIMEOUT)
+        except Exception as e:
+            if "control characters" in str(e):
+                raise ValueError(
+                    f"URL contains unencoded characters (e.g. spaces): {source_path}. "
+                    "The URL source should properly percent-encode the path."
+                ) from e
+            raise
 
-        with urllib.request.urlopen(req, timeout=DEFAULT_SOCKET_TIMEOUT) as page:
+        with page:
             # Verify url post-redirects is still allowlisted
             validate_non_local(page.geturl(), self._allowlist or config.fetch_url_allowlist)
             f = open(native_path, "wb")  # fd will be .close()ed in stream_to_open_named_file

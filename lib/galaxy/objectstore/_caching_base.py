@@ -1,11 +1,10 @@
 import logging
 import os
 import shutil
+from contextlib import contextmanager
 from datetime import datetime
 from typing import (
     Any,
-    Dict,
-    Optional,
 )
 
 from galaxy.exceptions import (
@@ -29,12 +28,12 @@ log = logging.getLogger(__name__)
 
 class CachingConcreteObjectStore(ConcreteObjectStore):
     staging_path: str
-    extra_dirs: Dict[str, str]
+    extra_dirs: dict[str, str]
     config: Any
     cache_updated_data: bool
     enable_cache_monitor: bool
     cache_size: int
-    cache_monitor: Optional[InProcessCacheMonitor] = None
+    cache_monitor: InProcessCacheMonitor | None = None
     cache_monitor_interval: int
 
     def _ensure_staging_path_writable(self):
@@ -59,6 +58,7 @@ class CachingConcreteObjectStore(ConcreteObjectStore):
         alt_name=None,
         obj_dir: bool = False,
         in_cache: bool = False,
+        **_kwargs,
     ) -> str:
         # extra_dir should never be constructed from provided data but just
         # make sure there are no shenannigans afoot
@@ -197,7 +197,7 @@ class CachingConcreteObjectStore(ConcreteObjectStore):
                 self._push_to_storage(rel_path, from_string="")
         return self
 
-    def _caching_allowed(self, rel_path: str, remote_size: Optional[int] = None) -> bool:
+    def _caching_allowed(self, rel_path: str, remote_size: int | None = None) -> bool:
         if remote_size is None:
             remote_size = self._get_remote_size(rel_path)
         if not self.cache_target.fits_in_cache(remote_size):
@@ -284,14 +284,18 @@ class CachingConcreteObjectStore(ConcreteObjectStore):
             return cache_path
 
         # Check if the file exists in the cache first, always pull if file size in cache is zero
-        # For dir_only - the cache cleaning may have left empty directories so I think we need to
-        # always resync the cache. Gotta make sure we're being judicious in out data.extra_files_path
-        # calls I think.
         if not dir_only and self._in_cache(rel_path) and os.path.getsize(self._get_cache_path(rel_path)) > 0:
             return cache_path
 
+        # For directories: trust cache if it has files. Individual file accesses
+        # handle cache misses via _pull_into_cache, so a full re-download is only
+        # needed when the directory is empty (e.g. after cache cleaning removed
+        # all files but left the empty directory).
+        if dir_only and os.path.isdir(cache_path) and any(files for _, _, files in os.walk(cache_path)):
+            return cache_path
+
         # Check if the file exists in persistent storage and, if it does, pull it into cache
-        elif self._exists(obj, **kwargs):
+        if self._exists(obj, **kwargs):
             if dir_only:
                 self._download_directory_into_cache(rel_path, cache_path)
                 return cache_path
@@ -356,7 +360,7 @@ class CachingConcreteObjectStore(ConcreteObjectStore):
                 try:
                     if source_file != cache_file and self.cache_updated_data:
                         # FIXME? Should this be a `move`?
-                        shutil.copy2(source_file, cache_file)
+                        shutil.copy(source_file, cache_file)
                     fix_permissions(self.config, cache_file)
                 except OSError:
                     log.exception("Trouble copying source file '%s' to cache '%s'", source_file, cache_file)
@@ -390,6 +394,28 @@ class CachingConcreteObjectStore(ConcreteObjectStore):
 
     def _exists_remotely(self, rel_path: str) -> bool:
         raise NotImplementedError()
+
+    @contextmanager
+    def _atomic_download(self, cache_path):
+        """Download to a temp file then atomically rename to prevent serving partial files.
+
+        Usage::
+
+            with self._atomic_download(local_destination) as tmp_path:
+                do_download(tmp_path)
+        """
+        tmp_path = cache_path + ".tmp"
+        try:
+            yield tmp_path
+            os.rename(tmp_path, cache_path)
+        except BaseException:
+            # Catch BaseException (not just Exception) so that KeyboardInterrupt
+            # and SystemExit also trigger cleanup — we re-raise immediately, so
+            # propagation is not blocked. Without this, interrupted downloads
+            # leave .tmp files that poison the cache on next startup.
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
 
     def _download(self, rel_path: str) -> bool:
         raise NotImplementedError()

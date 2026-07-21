@@ -1,8 +1,4 @@
 import re
-from typing import (
-    Optional,
-    Union,
-)
 
 from pydantic import (
     BaseModel,
@@ -14,29 +10,30 @@ from pydantic import (
 from typing_extensions import Self
 
 from galaxy.exceptions import RequestParameterInvalidException
-from galaxy.schema.schema import (
+from galaxy.tool_util_models.parameter_validators import AnySafeValidatorModel
+from galaxy.tool_util_models.sample_sheet import (
     SampleSheetColumnDefinition,
     SampleSheetColumnDefinitions,
     SampleSheetColumnType,
     SampleSheetColumnValueT,
     SampleSheetRow,
 )
-from galaxy.tool_util_models.parameter_validators import AnySafeValidatorModel
+from galaxy.util import strip_control_characters
 
 SampleSheetRows = dict[str, SampleSheetRow]
-OptionalSampleSheetRows = Optional[SampleSheetRows]
+OptionalSampleSheetRows = SampleSheetRows | None
 
 
 class SampleSheetColumnDefinitionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     name: str
     type: SampleSheetColumnType
-    description: Optional[str] = None
+    description: str | None = None
     optional: bool
-    validators: Optional[list[AnySafeValidatorModel]] = None
-    restrictions: Optional[list[SampleSheetColumnValueT]] = None
-    suggestions: Optional[list[SampleSheetColumnValueT]] = None
-    default_value: Optional[SampleSheetColumnValueT] = None
+    validators: list[AnySafeValidatorModel] | None = None
+    restrictions: list[SampleSheetColumnValueT] | None = None
+    suggestions: list[SampleSheetColumnValueT] | None = None
+    default_value: SampleSheetColumnValueT | None = None
 
     @model_validator(mode="after")
     def check_nature_of_default(self) -> Self:
@@ -63,7 +60,7 @@ class SampleSheetColumnDefinitionModel(BaseModel):
 
 
 SampleSheetColumnDefinitionsModel = RootModel[list[SampleSheetColumnDefinitionModel]]
-SampleSheetColumnDefinitionDictOrModel = Union[SampleSheetColumnDefinition, SampleSheetColumnDefinitionModel]
+SampleSheetColumnDefinitionDictOrModel = SampleSheetColumnDefinition | SampleSheetColumnDefinitionModel
 
 
 def sample_sheet_column_definition_to_model(
@@ -75,7 +72,7 @@ def sample_sheet_column_definition_to_model(
         return SampleSheetColumnDefinitionModel.model_validate(column_definition)
 
 
-def validate_column_definitions(column_definitions: Optional[SampleSheetColumnDefinitions]):
+def validate_column_definitions(column_definitions: SampleSheetColumnDefinitions | None):
     for column_definition in column_definitions or []:
         _validate_column_definition(column_definition)
 
@@ -94,10 +91,16 @@ def _validate_column_definition(column_definition: SampleSheetColumnDefinition):
 
 
 def validate_row(
-    row: SampleSheetRow, column_definitions: Optional[SampleSheetColumnDefinitions], element_identifiers: list[str]
+    row: SampleSheetRow | None,
+    column_definitions: SampleSheetColumnDefinitions | None,
+    element_identifiers: list[str],
 ):
-    if column_definitions is None:
+    if not column_definitions:
         return
+    if row is None:
+        raise RequestParameterInvalidException(
+            "Sample sheet row is missing. Ensure all element names in 'elements' have corresponding entries in 'rows'."
+        )
     if len(row) != len(column_definitions):
         raise RequestParameterInvalidException(
             "Sample sheet row validation failed, incorrect number of columns specified."
@@ -141,7 +144,7 @@ def validate_column_value(
     elif column_type == "string":
         if not isinstance(column_value, (str,)):
             raise RequestParameterInvalidException(f"{column_value} was not a string as expected")
-        validate_no_special_characters(column_value)
+        strip_control_characters(column_value)
     elif column_type == "boolean":
         if not isinstance(column_value, (bool,)):
             raise RequestParameterInvalidException(f"{column_value} was not a boolean as expected")
@@ -165,3 +168,41 @@ def validate_column_value(
             validator.statically_validate(column_value)
         except ValueError as e:
             raise RequestParameterInvalidException(str(e))
+
+
+def column_definitions_compatible(
+    collection_columns: SampleSheetColumnDefinitions | None,
+    required_columns: SampleSheetColumnDefinitions | None,
+) -> bool:
+    """Check if collection's column definitions exactly match required column definitions.
+
+    A collection is compatible when:
+    - Same number of columns
+    - Same column names in same order
+    - Column types match exactly
+    - Validators/restrictions are not compared (used for value validation only)
+
+    Args:
+        collection_columns: The column definitions from the collection
+        required_columns: The column definitions required by the parameter
+
+    Returns:
+        True if compatible, False otherwise
+    """
+    if not required_columns:
+        return True
+    if not collection_columns:
+        return False
+
+    # Must have same number of columns
+    if len(collection_columns) != len(required_columns):
+        return False
+
+    # Check each column matches in order
+    for collection_col, required_col in zip(collection_columns, required_columns):
+        if collection_col["name"] != required_col["name"]:
+            return False
+        if collection_col["type"] != required_col["type"]:
+            return False
+
+    return True

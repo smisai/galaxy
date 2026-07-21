@@ -1,4 +1,3 @@
-from typing import Optional
 from unittest.mock import Mock
 
 from galaxy.jobs import (
@@ -14,7 +13,6 @@ from galaxy.model.unittest_utils.data_app import GalaxyDataTestConfig
 
 
 class MockJobConfig:
-
     def __init__(self) -> None:
         self.limits = JobConfigurationLimits()
 
@@ -23,8 +21,7 @@ class MockJobConfig:
 
 
 class GalaxyJobConfigApp(GalaxyDataTestApp):
-
-    def __init__(self, config: Optional[GalaxyDataTestConfig] = None, **kwd):
+    def __init__(self, config: GalaxyDataTestConfig | None = None, **kwd):
         super().__init__(config, **kwd)
         self.job_config = MockJobConfig()
 
@@ -90,6 +87,11 @@ def test_anonymous_user_limit():
     job_destination_mock = create_mock_destination()
 
     create_mock_job(app, session_id=1, state="running")
+
+    # Test no jobs
+    app.job_config.limits.anonymous_user_concurrent_jobs = 0
+    result = job_wrapper.queue_with_limit(job, job_destination_mock)
+    assert result is False
 
     # Test below limit
     app.job_config.limits.anonymous_user_concurrent_jobs = 2

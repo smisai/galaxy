@@ -2,8 +2,10 @@
  * List of built-in activities
  */
 import {
+    faBezierCurve,
     faChartBar,
     faColumns,
+    faComments,
     faDatabase,
     faDownload,
     faFile,
@@ -19,6 +21,7 @@ import {
     faWrench,
 } from "@fortawesome/free-solid-svg-icons";
 
+import { ACTIVITY_LABELS } from "@/components/Page/constants";
 import type { Activity } from "@/stores/activityStoreTypes";
 import type { EventData } from "@/stores/eventStore";
 
@@ -38,6 +41,19 @@ export const defaultActivities = [
     },
     {
         anonymous: true,
+        description: "Opens the new beta upload interface with experimental features.",
+        icon: faUpload,
+        id: "beta-upload",
+        mutable: false,
+        optional: true,
+        panel: true,
+        title: "Beta Upload",
+        to: null,
+        tooltip: "Try the new experimental upload interface",
+        visible: false,
+    },
+    {
+        anonymous: true,
         description: "Displays the tool panel to search and access all available tools.",
         icon: faWrench,
         id: "tools",
@@ -48,6 +64,21 @@ export const defaultActivities = [
         to: null,
         tooltip: "Search and run tools",
         visible: true,
+    },
+    {
+        anonymous: false,
+        description: "AI-powered assistant to help with Galaxy tasks and troubleshooting.",
+        icon: faComments,
+        id: "galaxyai",
+        mutable: false,
+        optional: true,
+        panel: true,
+        title: "GalaxyAI",
+        to: null,
+        click: true,
+        tooltip: "Chat with GalaxyAI",
+        visible: true,
+        windowTitle: "GalaxyAI",
     },
     {
         anonymous: true,
@@ -116,6 +147,19 @@ export const defaultActivities = [
     },
     {
         anonymous: false,
+        description: "Lists histories to open in the History Graph view.",
+        icon: faBezierCurve,
+        id: "historygraph",
+        mutable: false,
+        optional: true,
+        panel: true,
+        title: "History Graphs",
+        tooltip: "Pick a history to view its provenance graph",
+        to: null,
+        visible: true,
+    },
+    {
+        anonymous: false,
         description: "Displays the history selector panel and opens History Multiview in the center panel.",
         icon: faColumns,
         id: "multiview",
@@ -142,14 +186,14 @@ export const defaultActivities = [
     },
     {
         anonymous: true,
-        description: "Display and create new pages.",
+        description: ACTIVITY_LABELS.description,
         icon: faFileContract,
         id: "pages",
         mutable: false,
         optional: true,
         panel: false,
-        title: "Pages",
-        tooltip: "Show all pages",
+        title: ACTIVITY_LABELS.title,
+        tooltip: ACTIVITY_LABELS.tooltip,
         to: "/pages/list",
         visible: true,
     },

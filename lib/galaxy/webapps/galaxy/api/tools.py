@@ -8,7 +8,6 @@ from json import loads
 from typing import (
     Any,
     cast,
-    Optional,
 )
 
 from fastapi import (
@@ -31,6 +30,7 @@ from galaxy import (
     web,
 )
 from galaxy.datatypes.data import get_params_and_input_name
+from galaxy.managers.citations import CitationsManager
 from galaxy.managers.collections import DatasetCollectionManager
 from galaxy.managers.context import (
     ProvidesHistoryContext,
@@ -62,7 +62,11 @@ from galaxy.tool_util.parameters import (
     ToolParameterT,
 )
 from galaxy.tool_util.verify import ToolTestDescriptionDict
-from galaxy.tool_util_models import UserToolSource
+from galaxy.tool_util_models import (
+    lift_user_tool_source,
+    ParsedTool,
+    UserToolSource,
+)
 from galaxy.tools.evaluation import global_tool_errors
 from galaxy.tools.fetch.workbooks import (
     FetchWorkbookCollectionType,
@@ -73,6 +77,7 @@ from galaxy.tools.fetch.workbooks import (
     ParsedFetchWorkbook,
     ParseFetchWorkbook,
 )
+from galaxy.tools.parameters.pagination import OptionsPaginationT
 from galaxy.util.hash_util import (
     HashFunctionNameEnum,
     memory_bound_hexdigest,
@@ -88,7 +93,10 @@ from galaxy.webapps.base.controller import UsesVisualizationMixin
 from galaxy.webapps.base.webapp import GalaxyWebTransaction
 from galaxy.webapps.galaxy.api.common import serve_workbook
 from galaxy.webapps.galaxy.services.base import tool_request_detailed_to_model
-from galaxy.webapps.galaxy.services.tools import ToolsService
+from galaxy.webapps.galaxy.services.tools import (
+    get_tool,
+    ToolsService,
+)
 from . import (
     APIContentTypeRoute,
     as_form,
@@ -133,7 +141,7 @@ FetchWorkbookCollectionTypeQueryParam: FetchWorkbookCollectionType = Query(
     title="Collection Type",
     description="Generate workbook for specified collection type (not all collection types are supported)",
 )
-FetchWorkbookFilenameQueryParam: Optional[str] = Query(
+FetchWorkbookFilenameQueryParam: str | None = Query(
     None,
     description="Filename of the workbook download to generate",
 )
@@ -148,10 +156,15 @@ ToolIDPathParam: str = Path(
     title="Tool ID",
     description="The tool ID for the lineage stored in Galaxy's toolbox.",
 )
-ToolVersionQueryParam: Optional[str] = Query(default=None, title="Tool Version", description="")
+ToolVersionPathParam: str = Path(
+    ...,
+    title="Tool Version",
+    description="The full version string defined on the Galaxy tool wrapper.",
+)
+ToolVersionQueryParam: str | None = Query(default=None, title="Tool Version", description="")
 
 
-async def get_files(request: Request, files: Optional[list[UploadFile]] = None):
+async def get_files(request: Request, files: list[UploadFile] | None = None):
     # FastAPI's UploadFile is a very light wrapper around starlette's UploadFile
     files2: list[StarletteUploadFile] = cast(list[StarletteUploadFile], files or [])
     if not files2:
@@ -195,7 +208,7 @@ class FetchTools:
         trans: ProvidesHistoryContext = DependsOnTrans,
         type: FetchWorkbookType = FetchWorkbookTypeQueryParam,
         collection_type: FetchWorkbookCollectionType = FetchWorkbookCollectionTypeQueryParam,
-        filename: Optional[str] = FetchWorkbookFilenameQueryParam,
+        filename: str | None = FetchWorkbookFilenameQueryParam,
     ):
         generate_request = GenerateFetchWorkbookRequest(
             type=type,
@@ -299,7 +312,7 @@ class FetchTools:
         trans: ProvidesHistoryContext = DependsOnTrans,
     ) -> ToolRequestDetailedModel:
         tool_request = self._get_tool_request_or_raise_not_found(trans, id)
-        return tool_request_detailed_to_model(tool_request)
+        return tool_request_detailed_to_model(tool_request, trans.security)
 
     @router.get(
         "/api/tool_requests/{id}/state",
@@ -323,7 +336,7 @@ class FetchTools:
     def tool_inputs(
         self,
         tool_id: str = ToolIDPathParam,
-        tool_version: Optional[str] = ToolVersionQueryParam,
+        tool_version: str | None = ToolVersionQueryParam,
         trans: ProvidesHistoryContext = DependsOnTrans,
     ) -> list[ToolParameterT]:
         tool_run_ref = ToolRunReference(tool_id=tool_id, tool_version=tool_version, tool_uuid=None)
@@ -343,8 +356,7 @@ class FetchTools:
         trans: ProvidesUserContext = DependsOnTrans,
         tool_landing_request: CreateToolLandingRequestPayload = Body(...),
     ) -> ToolLandingRequest:
-        tool_id = tool_landing_request.tool_id
-        if tool_id in PROTECTED_TOOLS:
+        if (tool_id := tool_landing_request.tool_id) in PROTECTED_TOOLS:
             raise exceptions.RequestParameterInvalidException(
                 f"Cannot execute tool [{tool_id}] directly, must use alternative endpoint."
             )
@@ -355,7 +367,7 @@ class FetchTools:
         self,
         trans: ProvidesUserContext = DependsOnTrans,
         uuid: UUID4 = LandingUuidPathParam,
-        payload: Optional[ClaimLandingPayload] = Body(...),
+        payload: ClaimLandingPayload | None = Body(...),
     ) -> ToolLandingRequest:
         return self.landing_manager.claim_tool_landing_request(trans, uuid, payload)
 
@@ -376,7 +388,7 @@ class FetchTools:
     def tool_state_request(
         self,
         tool_id: str = ToolIDPathParam,
-        tool_version: Optional[str] = ToolVersionQueryParam,
+        tool_version: str | None = ToolVersionQueryParam,
         trans: ProvidesHistoryContext = DependsOnTrans,
     ) -> Response:
         tool_run_ref = ToolRunReference(tool_id=tool_id, tool_version=tool_version, tool_uuid=None)
@@ -394,7 +406,7 @@ class FetchTools:
     def tool_state_landing_request(
         self,
         tool_id: str = ToolIDPathParam,
-        tool_version: Optional[str] = ToolVersionQueryParam,
+        tool_version: str | None = ToolVersionQueryParam,
         trans: ProvidesHistoryContext = DependsOnTrans,
     ) -> Response:
         tool_run_ref = ToolRunReference(tool_id=tool_id, tool_version=tool_version, tool_uuid=None)
@@ -412,7 +424,7 @@ class FetchTools:
     def tool_state_test_case_xml(
         self,
         tool_id: str = ToolIDPathParam,
-        tool_version: Optional[str] = ToolVersionQueryParam,
+        tool_version: str | None = ToolVersionQueryParam,
         trans: ProvidesHistoryContext = DependsOnTrans,
     ) -> Response:
         tool_run_ref = ToolRunReference(tool_id=tool_id, tool_version=tool_version, tool_uuid=None)
@@ -422,12 +434,102 @@ class FetchTools:
             inputs,
         )
 
+    @router.get(
+        "/api/tags/tool_tags",
+        operation_id="tags__tool_tags",
+        summary="Return the curated tool-id to tag-name mapping for currently-loaded tools.",
+    )
+    def tool_tags(self, trans: ProvidesHistoryContext = DependsOnTrans) -> dict[str, list[str]]:
+        return self.service.curated_tool_tags_by_id(trans)
+
+    @router.get(
+        "/api/tools/{tool_id}/interop",
+        operation_id="tools__interop",
+        summary="Return Galaxy's meta model description of the tool's metadata, inputs, and outputs.",
+    )
+    def parsed_tool(
+        self,
+        tool_id: str = ToolIDPathParam,
+        tool_version: str | None = ToolVersionQueryParam,
+        trans: ProvidesHistoryContext = DependsOnTrans,
+    ) -> ParsedTool:
+        return self._parsed_tool(trans, tool_id, tool_version)
+
+    @router.get(
+        "/api/tools/{tool_id}/versions/{tool_version}/interop",
+        operation_id="tools__versioned_interop",
+        summary="Return Galaxy's meta model description of the tool's metadata, inputs, and outputs.",
+    )
+    def parsed_tool_versioned(
+        self,
+        tool_id: str = ToolIDPathParam,
+        tool_version: str = ToolVersionPathParam,
+        trans: ProvidesHistoryContext = DependsOnTrans,
+    ) -> ParsedTool:
+        return self._parsed_tool(trans, tool_id, tool_version)
+
+    @router.get(
+        "/api/tools/{tool_id}/versions/{tool_version}/parameter_request_schema",
+        operation_id="tools__versioned_parameter_request_schema",
+        summary="Return a JSON schema description of the tool's inputs for the tool request API.",
+    )
+    def tool_state_request_versioned(
+        self,
+        tool_id: str = ToolIDPathParam,
+        tool_version: str = ToolVersionPathParam,
+        trans: ProvidesHistoryContext = DependsOnTrans,
+    ) -> Response:
+        tool_run_ref = ToolRunReference(tool_id=tool_id, tool_version=tool_version, tool_uuid=None)
+        inputs = self.service.inputs(trans, tool_run_ref)
+        return json_schema_response_for_tool_state_model(RequestToolState, inputs)
+
+    @router.get(
+        "/api/tools/{tool_id}/versions/{tool_version}/parameter_landing_request_schema",
+        operation_id="tools__versioned_parameter_landing_request_schema",
+        summary="Return a JSON schema description of the tool's inputs for the tool landing request API.",
+    )
+    def tool_state_landing_request_versioned(
+        self,
+        tool_id: str = ToolIDPathParam,
+        tool_version: str = ToolVersionPathParam,
+        trans: ProvidesHistoryContext = DependsOnTrans,
+    ) -> Response:
+        tool_run_ref = ToolRunReference(tool_id=tool_id, tool_version=tool_version, tool_uuid=None)
+        inputs = self.service.inputs(trans, tool_run_ref)
+        return json_schema_response_for_tool_state_model(LandingRequestToolState, inputs)
+
+    @router.get(
+        "/api/tools/{tool_id}/versions/{tool_version}/parameter_test_case_xml_schema",
+        operation_id="tools__versioned_parameter_test_case_xml_schema",
+        summary="Return a JSON schema description of the tool's inputs for test case construction.",
+    )
+    def tool_state_test_case_xml_versioned(
+        self,
+        tool_id: str = ToolIDPathParam,
+        tool_version: str = ToolVersionPathParam,
+        trans: ProvidesHistoryContext = DependsOnTrans,
+    ) -> Response:
+        tool_run_ref = ToolRunReference(tool_id=tool_id, tool_version=tool_version, tool_uuid=None)
+        inputs = self.service.inputs(trans, tool_run_ref)
+        return json_schema_response_for_tool_state_model(TestCaseToolState, inputs)
+
+    def _parsed_tool(
+        self,
+        trans: ProvidesHistoryContext,
+        tool_id: str,
+        tool_version: str | None,
+    ) -> ParsedTool:
+        tool_run_ref = ToolRunReference(tool_id=tool_id, tool_version=tool_version, tool_uuid=None)
+        tool = get_tool(trans, tool_run_ref)
+        return tool.parsed_tool()
+
 
 class ToolsController(BaseGalaxyAPIController, UsesVisualizationMixin):
     """
     RESTful controller for interactions with tools.
     """
 
+    citations_manager: CitationsManager = depends(CitationsManager)
     history_manager: HistoryManager = depends(HistoryManager)
     hda_manager: HDAManager = depends(HDAManager)
     hdca_manager: DatasetCollectionManager = depends(DatasetCollectionManager)
@@ -538,7 +640,8 @@ class ToolsController(BaseGalaxyAPIController, UsesVisualizationMixin):
         io_details = util.string_as_bool(kwd.get("io_details", False))
         link_details = util.string_as_bool(kwd.get("link_details", False))
         tool_version = kwd.get("tool_version")
-        tool = self.service._get_tool(trans, id, user=trans.user, tool_version=tool_version, tool_uuid=id)
+        tool_uuid = kwd.get("tool_uuid")
+        tool = self.service._get_tool(trans, id, user=trans.user, tool_version=tool_version, tool_uuid=tool_uuid)
         return tool.to_dict(trans, io_details=io_details, link_details=link_details)
 
     @expose_api_anonymous
@@ -555,8 +658,9 @@ class ToolsController(BaseGalaxyAPIController, UsesVisualizationMixin):
             history = self.history_manager.get_owned(
                 self.decode_id(history_id), trans.user, current_history=trans.history
             )
+        options_pagination = _parse_options_pagination(kwd.pop("options_pagination", None))
         tool = self.service._get_tool(trans, id, tool_version=tool_version, user=trans.user, tool_uuid=tool_uuid)
-        return tool.to_json(trans, kwd.get("inputs", kwd), history=history)
+        return tool.to_json(trans, kwd.get("inputs", kwd), history=history, options_pagination=options_pagination)
 
     @web.require_admin
     @expose_api
@@ -653,7 +757,7 @@ class ToolsController(BaseGalaxyAPIController, UsesVisualizationMixin):
 
         test_defs = []
         for tool in tools:
-            test_defs.extend([t.to_dict() for t in tool.tests])
+            test_defs.extend([t.to_dict() for t in tool.tests or []])
         return test_defs
 
     @web.require_admin
@@ -773,7 +877,7 @@ class ToolsController(BaseGalaxyAPIController, UsesVisualizationMixin):
             lineage_dict = tool.lineage.to_dict()
         else:
             lineage_dict = None
-        tool_shed_dependencies_dict: Optional[list] = None
+        tool_shed_dependencies_dict: list | None = None
         if tool_shed_dependencies := tool.installed_tool_dependencies:
             tool_shed_dependencies_dict = list(map(to_dict, tool_shed_dependencies))
         return {
@@ -793,11 +897,10 @@ class ToolsController(BaseGalaxyAPIController, UsesVisualizationMixin):
 
     @expose_api_anonymous_and_sessionless
     def citations(self, trans: GalaxyWebTransaction, id, **kwds):
-        tool = self.service._get_tool(trans, id, user=trans.user)
-        rval = []
-        for citation in tool.citations:
-            rval.append(citation.to_dict("bibtex"))
-        return rval
+        citations, errors = self.citations_manager.citations_for_tool_ids([id])
+        return [citation.to_dict("bibtex").model_dump() for citation in citations] + [
+            error.model_dump() for error in errors
+        ]
 
     @expose_api
     def conversion(self, trans: GalaxyWebTransaction, tool_id, payload, **kwd):
@@ -870,11 +973,31 @@ class ToolsController(BaseGalaxyAPIController, UsesVisualizationMixin):
             raise exceptions.InsufficientPermissionsException(
                 "Only administrators may display tool sources on this Galaxy server."
             )
-        tool = self.service._get_tool(trans, id, user=trans.user, tool_version=kwds.get("tool_version"), tool_uuid=id)
+        tool_uuid = kwds.get("tool_uuid")
+        tool = self.service._get_tool(
+            trans, id, user=trans.user, tool_version=kwds.get("tool_version"), tool_uuid=tool_uuid
+        )
         trans.response.headers["language"] = tool.tool_source.language
         if dynamic_tool := getattr(tool, "dynamic_tool", None):
             if dynamic_tool.value.get("class") == "GalaxyUserTool":
-                return UserToolSource(**dynamic_tool.value).model_dump_json(
+                status, lifted, errors = lift_user_tool_source(dynamic_tool.value)
+                if status == "lifted" and errors:
+                    compact = ",".join(errors)
+                    trans.response.headers["X-Galaxy-Deprecated-Fields"] = compact
+                    trans.response.headers["Warning"] = (
+                        f'299 - "Some conventions are no longer valid; ignored on read: {compact}"'
+                    )
+                elif status == "invalid":
+                    compact = "; ".join(errors)
+                    trans.response.headers["X-Galaxy-Schema-Errors"] = compact
+                    trans.response.headers["Warning"] = f'299 - "Stored tool no longer satisfies schema: {compact}"'
+                    # Return the raw stored value so callers can still inspect /
+                    # repair the YAML manually.
+                    import json
+
+                    return json.dumps(dynamic_tool.value)
+                assert isinstance(lifted, UserToolSource)
+                return lifted.model_dump_json(
                     by_alias=True,
                     exclude_defaults=True,
                     exclude_unset=True,
@@ -891,7 +1014,9 @@ class ToolsController(BaseGalaxyAPIController, UsesVisualizationMixin):
         return global_tool_errors.error_stack
 
     @expose_api_anonymous
-    def create(self, trans: GalaxyWebTransaction, payload, **kwd):
+    def create(self, trans: GalaxyWebTransaction, payload=None, **kwd):
+        if payload is None:
+            raise exceptions.RequestParameterMissingException("A payload is required for tool execution.")
         """
         POST /api/tools
         Execute tool with a given parameter payload
@@ -919,7 +1044,7 @@ class ToolsController(BaseGalaxyAPIController, UsesVisualizationMixin):
         return self.service._create(trans, payload, **kwd)
 
 
-def validate_not_protected(tool_id: Optional[str]):
+def validate_not_protected(tool_id: str | None):
     if tool_id in PROTECTED_TOOLS:
         raise exceptions.RequestParameterInvalidException(
             f"Cannot execute tool [{tool_id}] directly, must use alternative endpoint."
@@ -928,5 +1053,26 @@ def validate_not_protected(tool_id: Optional[str]):
 
 def _kwd_or_payload(kwd: dict[str, Any]) -> dict[str, Any]:
     if "payload" in kwd:
-        kwd = cast(dict[str, Any], kwd.get("payload"))
+        payload = kwd.get("payload")
+        if not isinstance(payload, dict):
+            raise exceptions.RequestParameterInvalidException("Request payload must be a JSON object.")
+        kwd = payload
     return kwd
+
+
+def _parse_options_pagination(value: Any) -> OptionsPaginationT | None:
+    """Accept ``options_pagination`` as a dict (POST body) or JSON-encoded string
+    (GET query param). Returns ``None`` if not provided. Server-side clamps are
+    applied later in ``_normalize_pagination`` so individual entries don't need
+    to be validated here.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        try:
+            value = loads(value)
+        except ValueError as e:
+            raise exceptions.RequestParameterInvalidException(f"options_pagination must be a JSON object: {e}")
+    if not isinstance(value, dict):
+        raise exceptions.RequestParameterInvalidException("options_pagination must be a JSON object.")
+    return value

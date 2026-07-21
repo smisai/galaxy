@@ -1,15 +1,14 @@
 import os
 import re
+from collections.abc import Callable
 from functools import wraps
 from typing import (
     Any,
-    Callable,
-    Optional,
+    Literal,
 )
 from urllib.parse import urljoin
 
 import requests
-from typing_extensions import Literal
 
 from galaxy_test.base.api_asserts import (
     assert_has_keys,
@@ -35,7 +34,7 @@ def get_admin_api_key() -> str:
     return DEFAULT_TOOL_SHED_BOOTSTRAP_ADMIN_API_KEY
 
 
-def get_user_api_key() -> Optional[str]:
+def get_user_api_key() -> str | None:
     """Test user API key to use for functional tests.
 
     If set, this should drive API based testing - if not set an admin API key will
@@ -115,9 +114,7 @@ def create_user(admin_interactor: ShedApiInteractor, user_dict: dict[str, Any], 
     return response.json()
 
 
-def ensure_user_with_email(
-    admin_api_interactor: ShedApiInteractor, email: str, password: Optional[str]
-) -> dict[str, Any]:
+def ensure_user_with_email(admin_api_interactor: ShedApiInteractor, email: str, password: str | None) -> dict[str, Any]:
     all_users_response = admin_api_interactor.get("users")
     try:
         all_users_response.raise_for_status()

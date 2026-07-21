@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-from typing import Optional
 
 from galaxy.exceptions import RequestParameterMissingException
 from galaxy.job_execution.output_collect import copy_collection_metadata_from_target_dict
@@ -41,17 +40,17 @@ class BaseUploadToolAction(ToolAction):
         self,
         tool,
         trans,
-        incoming: Optional[ToolStateJobInstancePopulatedT] = None,
-        history: Optional[History] = None,
+        incoming: ToolStateJobInstancePopulatedT | None = None,
+        history: History | None = None,
         job_params=None,
-        rerun_remap_job_id: Optional[int] = DEFAULT_RERUN_REMAP_JOB_ID,
-        execution_cache: Optional[ToolExecutionCache] = None,
-        dataset_collection_elements: Optional[DatasetCollectionElementsSliceT] = DEFAULT_DATASET_COLLECTION_ELEMENTS,
-        completed_job: Optional[Job] = None,
-        collection_info: Optional[MatchingCollections] = None,
-        job_callback: Optional[JobCallbackT] = DEFAULT_JOB_CALLBACK,
-        preferred_object_store_id: Optional[str] = DEFAULT_PREFERRED_OBJECT_STORE_ID,
-        credentials_context: Optional[CredentialsContext] = None,
+        rerun_remap_job_id: int | None = DEFAULT_RERUN_REMAP_JOB_ID,
+        execution_cache: ToolExecutionCache | None = None,
+        dataset_collection_elements: DatasetCollectionElementsSliceT | None = DEFAULT_DATASET_COLLECTION_ELEMENTS,
+        completed_job: Job | None = None,
+        collection_info: MatchingCollections | None = None,
+        job_callback: JobCallbackT | None = DEFAULT_JOB_CALLBACK,
+        preferred_object_store_id: str | None = DEFAULT_PREFERRED_OBJECT_STORE_ID,
+        credentials_context: CredentialsContext | None = None,
         set_output_hid: bool = DEFAULT_SET_OUTPUT_HID,
         flush_job: bool = True,
         skip: bool = False,
@@ -67,10 +66,10 @@ class BaseUploadToolAction(ToolAction):
         persisting_uploads_timer = ExecutionTimer()
         incoming = upload_common.persist_uploads(incoming, trans)
         log.debug(f"Persisted uploads {persisting_uploads_timer}")
-        rval = self._setup_job(tool, trans, incoming, dataset_upload_inputs, history)
+        rval = self._setup_job(tool, trans, incoming, dataset_upload_inputs, history, preferred_object_store_id)
         return rval
 
-    def _setup_job(self, tool, trans, incoming, dataset_upload_inputs, history):
+    def _setup_job(self, tool, trans, incoming, dataset_upload_inputs, history, preferred_object_store_id):
         """Take persisted uploads and create a job for given tool."""
 
     def _create_job(self, *args, **kwds):
@@ -82,7 +81,7 @@ class BaseUploadToolAction(ToolAction):
 
 
 class UploadToolAction(BaseUploadToolAction):
-    def _setup_job(self, tool, trans, incoming, dataset_upload_inputs, history):
+    def _setup_job(self, tool, trans, incoming, dataset_upload_inputs, history, preferred_object_store_id):
         check_timer = ExecutionTimer()
         uploaded_datasets = upload_common.get_uploaded_datasets(
             trans, "", incoming, dataset_upload_inputs, history=history
@@ -94,11 +93,19 @@ class UploadToolAction(BaseUploadToolAction):
         json_file_path = upload_common.create_paramfile(trans, uploaded_datasets)
         data_list = [ud.data for ud in uploaded_datasets]
         log.debug(f"Checked uploads {check_timer}")
-        return self._create_job(trans, incoming, tool, json_file_path, data_list, history=history)
+        return self._create_job(
+            trans,
+            incoming,
+            tool,
+            json_file_path,
+            data_list,
+            history=history,
+            preferred_object_store_id=preferred_object_store_id,
+        )
 
 
 class FetchUploadToolAction(BaseUploadToolAction):
-    def _setup_job(self, tool, trans, incoming, dataset_upload_inputs, history):
+    def _setup_job(self, tool, trans, incoming, dataset_upload_inputs, history, preferred_object_store_id):
         # Now replace references in requests with these.
         files = incoming.get("files", [])
         files_iter = iter(files)
@@ -143,7 +150,15 @@ class FetchUploadToolAction(BaseUploadToolAction):
                 _precreate_fetched_collection_instance(trans, history, target, outputs)
 
         incoming["request_json"] = json.dumps(request)
-        return self._create_job(trans, incoming, tool, None, outputs, history=history)
+        return self._create_job(
+            trans,
+            incoming,
+            tool,
+            None,
+            outputs,
+            history=history,
+            preferred_object_store_id=preferred_object_store_id,
+        )
 
 
 def _precreate_fetched_hdas(trans, history, target, outputs):

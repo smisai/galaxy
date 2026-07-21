@@ -3,16 +3,17 @@ import logging
 import uuid
 from typing import (
     Any,
-    Optional,
     TYPE_CHECKING,
-    Union,
 )
 
 from pydantic import ValidationError
 
 from galaxy import exceptions
 from galaxy.exceptions.utils import validation_error_to_message_exception
-from galaxy.managers.hdas import dereference_input
+from galaxy.managers.hdas import (
+    dereference_input_to_hda,
+    dereference_input_to_hdca,
+)
 from galaxy.model import (
     EffectiveOutput,
     History,
@@ -26,7 +27,12 @@ from galaxy.model import (
     WorkflowRequestStepState,
 )
 from galaxy.model.base import ensure_object_added_to_session
-from galaxy.tool_util_models.parameters import DataOrCollectionRequestAdapter
+from galaxy.tool_util_models.parameters import (
+    DataOrCollectionRequestAdapter,
+    DataRequestCollectionUri,
+    DataRequestUri,
+    FileRequestUri,
+)
 from galaxy.tools.parameters.basic import ParameterValueError
 from galaxy.tools.parameters.meta import expand_workflow_inputs
 from galaxy.tools.parameters.workflow_utils import NO_REPLACEMENT
@@ -79,18 +85,19 @@ class WorkflowRunConfig:
     def __init__(
         self,
         target_history: "History",
-        replacement_dict: Optional[dict[str, Any]] = None,
-        inputs: Optional[dict[int, Any]] = None,
-        param_map: Optional[dict[int, Any]] = None,
+        replacement_dict: dict[str, Any] | None = None,
+        inputs: dict[int, Any] | None = None,
+        param_map: dict[int, Any] | None = None,
         allow_tool_state_corrections: bool = False,
         copy_inputs_to_history: bool = False,
         use_cached_job: bool = False,
-        resource_params: Optional[dict[int, Any]] = None,
+        resource_params: dict[int, Any] | None = None,
         requires_materialization: bool = False,
-        preferred_object_store_id: Optional[str] = None,
-        preferred_outputs_object_store_id: Optional[str] = None,
-        preferred_intermediate_object_store_id: Optional[str] = None,
-        effective_outputs: Optional[list[EffectiveOutput]] = None,
+        preferred_object_store_id: str | None = None,
+        preferred_outputs_object_store_id: str | None = None,
+        preferred_intermediate_object_store_id: str | None = None,
+        effective_outputs: list[EffectiveOutput] | None = None,
+        on_complete: list[dict[str, Any]] | None = None,
     ) -> None:
         self.target_history = target_history
         self.replacement_dict = replacement_dict or {}
@@ -105,6 +112,7 @@ class WorkflowRunConfig:
         self.preferred_outputs_object_store_id = preferred_outputs_object_store_id
         self.preferred_intermediate_object_store_id = preferred_intermediate_object_store_id
         self.effective_outputs = effective_outputs
+        self.on_complete = on_complete
 
 
 def _normalize_inputs(
@@ -256,7 +264,7 @@ def _get_target_history(
     trans: "GalaxyWebTransaction",
     workflow: "Workflow",
     payload: dict[str, Any],
-    param_keys: Optional[list[list]] = None,
+    param_keys: list[list] | None = None,
     index: int = 0,
 ) -> History:
     param_keys = param_keys or []
@@ -419,11 +427,20 @@ def build_workflow_run_configs(
                     content = app.dataset_collection_manager.get_dataset_collection_instance(
                         trans, "history", data_request.id
                     )
-                elif data_request.src == "url" or data_request.class_ == "File" or data_request.class_ == "Collection":
-                    request_input = dereference_input(trans, data_request, history)
+                elif isinstance(data_request, DataRequestCollectionUri):
+                    hdca_input = dereference_input_to_hdca(trans, data_request, history)
                     added_to_history = True
                     content = InputWithRequest(
-                        input=request_input,
+                        input=hdca_input,
+                        request=data_request.model_dump(mode="json"),
+                    )
+                    if not data_request.deferred:
+                        requires_materialization = True
+                elif isinstance(data_request, (DataRequestUri, FileRequestUri)):
+                    hda_input = dereference_input_to_hda(trans, data_request, history)
+                    added_to_history = True
+                    content = InputWithRequest(
+                        input=hda_input,
                         request=data_request.model_dump(mode="json"),
                     )
                     if not data_request.deferred:
@@ -436,7 +453,7 @@ def build_workflow_run_configs(
                     if isinstance(content, HistoryDatasetCollectionAssociation):
                         content = content.copy(element_destination=history, flush=False)
                     else:
-                        content = content.copy(flush=False)
+                        content = content.copy(copy_tags=content.tags, flush=False)
                     history.stage_addition(content)
                 input_dict["content"] = content
             except AssertionError:
@@ -507,6 +524,7 @@ def build_workflow_run_configs(
                 preferred_object_store_id=preferred_object_store_id,
                 preferred_outputs_object_store_id=preferred_outputs_object_store_id,
                 preferred_intermediate_object_store_id=preferred_intermediate_object_store_id,
+                on_complete=payload.get("on_complete"),
             )
         )
 
@@ -522,6 +540,7 @@ def workflow_run_config_to_request(
     workflow_invocation.uuid = uuid.uuid1()
     workflow_invocation.history = run_config.target_history
     workflow_invocation.state = WorkflowInvocation.states.NEW
+    workflow_invocation.on_complete = run_config.on_complete
     ensure_object_added_to_session(workflow_invocation, object_in_session=run_config.target_history)
 
     def add_parameter(name: str, value: str, type: WorkflowRequestInputParameter.types) -> None:
@@ -548,7 +567,7 @@ def workflow_run_config_to_request(
         if step.type == "subworkflow":
             subworkflow = step.subworkflow
             assert subworkflow
-            effective_outputs: Optional[list[EffectiveOutput]] = None
+            effective_outputs: list[EffectiveOutput] | None = None
             if run_config.preferred_intermediate_object_store_id or run_config.preferred_outputs_object_store_id:
                 step_outputs = step.workflow_outputs
                 effective_outputs = []
@@ -585,6 +604,10 @@ def workflow_run_config_to_request(
 
     replacement_dict = run_config.replacement_dict
     for name, value in replacement_dict.items():
+        if not isinstance(value, str):
+            raise exceptions.RequestParameterInvalidException(
+                f"Replacement parameter '{name}' must be a string, got {type(value).__name__}"
+            )
         add_parameter(
             name=name,
             value=value,
@@ -629,7 +652,7 @@ def workflow_request_to_run_config(
     history = workflow_invocation.history
     replacement_dict = {}
     inputs: dict[
-        int, Union[HistoryDatasetAssociation, HistoryDatasetCollectionAssociation, str, int, float, bool, None]
+        int, HistoryDatasetAssociation | HistoryDatasetCollectionAssociation | str | int | float | bool | None
     ] = {}
     param_map = {}
     resource_params = {}

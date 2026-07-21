@@ -4,8 +4,6 @@ import logging
 from collections import namedtuple
 from typing import (
     Any,
-    Optional,
-    Union,
 )
 
 from galaxy import (
@@ -23,7 +21,10 @@ from galaxy.model.dataset_collections import (
     matching,
     subcollections,
 )
-from galaxy.model.dataset_collections.adapters import PromoteCollectionElementToCollectionAdapter
+from galaxy.model.dataset_collections.adapters import (
+    CollectionAdapter,
+    PromoteCollectionElementToCollectionAdapter,
+)
 from galaxy.tool_util.parameters import RequestInternalDereferencedToolState
 from galaxy.util.permutations import (
     build_combos,
@@ -36,6 +37,10 @@ from galaxy.util.permutations import (
 )
 from galaxy.work.context import WorkRequestContext
 from . import visit_input_values
+from .workflow_utils import (
+    runtime_to_json,
+    RuntimeValue,
+)
 from .wrapped import process_key
 from .._types import (
     InputFormatT,
@@ -175,7 +180,7 @@ def expand_workflow_inputs(param_inputs, inputs=None):
     return WorkflowParameterExpansion(param_combinations, params_keys, input_combinations)
 
 
-ExpandedT = tuple[list[ToolStateJobInstanceT], Optional[matching.MatchingCollections]]
+ExpandedT = tuple[list[ToolStateJobInstanceT], matching.MatchingCollections | None]
 
 
 def expand_flat_parameters_to_nested(incoming_copy: ToolRequestT) -> dict[str, Any]:
@@ -184,6 +189,23 @@ def expand_flat_parameters_to_nested(incoming_copy: ToolRequestT) -> dict[str, A
         if not incoming_key.startswith("__"):
             process_key(incoming_key, incoming_value=incoming_value, d=nested_dict)
     return nested_dict
+
+
+def _remove_internal_state_keys(state: Any) -> None:
+    """Remove ``__``-prefixed keys from every dict in the nested state.
+
+    ``visit_input_values`` injects internal book-keeping entries such as
+    ``__current_case__`` and ``__index__`` as side-effects.  These must not
+    reach the job-internal Pydantic validation layer, which uses ``extra='forbid'``.
+    """
+    if isinstance(state, dict):
+        for key in [k for k in state if k.startswith("__")]:
+            del state[key]
+        for v in state.values():
+            _remove_internal_state_keys(v)
+    elif isinstance(state, list):
+        for item in state:
+            _remove_internal_state_keys(item)
 
 
 def expand_meta_parameters(
@@ -312,7 +334,6 @@ def split_inputs_flat(inputs: dict[str, Any], classifier):
 
 
 def split_inputs_nested(inputs, nested_dict, classifier):
-    single_inputs: dict[str, Any] = {}
     matched_multi_inputs: dict[str, Any] = {}
     multiplied_multi_inputs: dict[str, Any] = {}
     unset_value = object()
@@ -323,9 +344,7 @@ def split_inputs_nested(inputs, nested_dict, classifier):
             return
 
         input_type, expanded_val = classifier(value, prefixed_name)
-        if input_type == input_classification.SINGLE:
-            single_inputs[prefixed_name] = expanded_val
-        elif input_type == input_classification.MATCHED:
+        if input_type == input_classification.MATCHED:
             matched_multi_inputs[prefixed_name] = expanded_val
         elif input_type == input_classification.MULTIPLIED:
             multiplied_multi_inputs[prefixed_name] = expanded_val
@@ -333,12 +352,12 @@ def split_inputs_nested(inputs, nested_dict, classifier):
     visit_input_values(
         inputs=inputs, input_values=nested_dict, callback=visitor, allow_case_inference=True, unset_value=unset_value
     )
-    single_inputs_nested = expand_flat_parameters_to_nested(single_inputs)
-    return (single_inputs_nested, matched_multi_inputs, multiplied_multi_inputs)
+    _remove_internal_state_keys(nested_dict)
+    return (nested_dict, matched_multi_inputs, multiplied_multi_inputs)
 
 
 ExpandedAsyncT = tuple[
-    list[ToolStateJobInstanceT], list[ToolStateDumpedToJsonInternalT], Optional[matching.MatchingCollections]
+    list[ToolStateJobInstanceT], list[ToolStateDumpedToJsonInternalT], matching.MatchingCollections | None
 ]
 
 
@@ -399,6 +418,8 @@ def to_decoded_json(has_objects):
         return decoded_json
     elif isinstance(has_objects, list):
         return [to_decoded_json(o) for o in has_objects]
+    elif isinstance(has_objects, CollectionAdapter):
+        return has_objects.to_adapter_model().model_dump()
     elif isinstance(has_objects, DatasetCollectionElement):
         return {"src": "dce", "id": has_objects.id}
     elif isinstance(has_objects, HistoryDatasetAssociation):
@@ -407,13 +428,15 @@ def to_decoded_json(has_objects):
         return {"src": "hdca", "id": has_objects.id}
     elif isinstance(has_objects, LibraryDatasetDatasetAssociation):
         return {"src": "ldda", "id": has_objects.id}
+    elif isinstance(has_objects, RuntimeValue):
+        return runtime_to_json(has_objects)
     else:
         return has_objects
 
 
-CollectionExpansionListT = Union[
-    list[Union[DatasetCollectionElement, PromoteCollectionElementToCollectionAdapter]], list[DatasetInstance]
-]
+CollectionExpansionListT = (
+    list[DatasetCollectionElement | PromoteCollectionElementToCollectionAdapter] | list[DatasetInstance]
+)
 
 
 def __expand_collection_parameter(
@@ -441,15 +464,16 @@ def __expand_collection_parameter(
     if src == "dce":
         item = trans.sa_session.get_one(DatasetCollectionElement, decoded_id)
         collection = item.child_collection
+        if not collection:
+            raise exceptions.ToolMetaParameterException(f"DCE {decoded_id} does not contain a child collection")
     else:
         item = trans.sa_session.get_one(HistoryDatasetCollectionAssociation, decoded_id)
         collection = item.collection
-    assert collection
     if not collection.populated_optimized:
         raise exceptions.ToolInputsNotReadyException("An input collection is not populated.")
     collections_to_match.add(input_key, item, subcollection_type=subcollection_type, linked=linked)
     if subcollection_type is not None:
-        subcollection_elements: list[Union[DatasetCollectionElement, PromoteCollectionElementToCollectionAdapter]] = (
+        subcollection_elements: list[DatasetCollectionElement | PromoteCollectionElementToCollectionAdapter] = (
             subcollections._split_dataset_collection(collection, subcollection_type)
         )
         return subcollection_elements
@@ -469,21 +493,29 @@ def __expand_collection_parameter_async(
     # be "hdca_id|subcollection_type" else it will just be hdca_id
     try:
         src = incoming_val["src"]
-        if src != "hdca":
+        if src not in ("hdca", "dce"):
             raise exceptions.ToolMetaParameterException(f"Invalid dataset collection source type {src}")
-        hdc_id = incoming_val["id"]
+        item_id = incoming_val["id"]
         subcollection_type = incoming_val.get("map_over_type", None)
     except TypeError:
-        hdc_id = incoming_val
+        item_id = incoming_val
+        src = "hdca"
         subcollection_type = None
-    hdc = app.model.context.get(HistoryDatasetCollectionAssociation, hdc_id)
-    collections_to_match.add(input_key, hdc, subcollection_type=subcollection_type, linked=linked)
+    if src == "dce":
+        item = app.model.context.get(DatasetCollectionElement, item_id)
+        collection = item.child_collection
+        if not collection:
+            raise exceptions.ToolMetaParameterException(f"DCE {item_id} does not contain a child collection")
+    else:
+        item = app.model.context.get(HistoryDatasetCollectionAssociation, item_id)
+        collection = item.collection
+    collections_to_match.add(input_key, item, subcollection_type=subcollection_type, linked=linked)
     if subcollection_type is not None:
-        subcollection_elements = subcollections.split_dataset_collection_instance(hdc, subcollection_type)
+        subcollection_elements = subcollections._split_dataset_collection(collection, subcollection_type)
         return subcollection_elements
     else:
         hdas: list[DatasetInstance] = []
-        for element in hdc.collection.dataset_elements:
+        for element in collection.dataset_elements:
             hda = element.dataset_instance
             hda.element_identifier = element.element_identifier
             hdas.append(hda)

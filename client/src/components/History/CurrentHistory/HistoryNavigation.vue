@@ -52,13 +52,13 @@ function userTitle(title: string) {
             aria-label="current history management">
             <GButton v-if="!props.minimal" size="small" transparent @click="emit('show', false)">
                 <FontAwesomeIcon fixed-width :icon="faChevronRight" />
-                <span>History</span>
+                <span v-localize>History</span>
             </GButton>
 
             <BButtonGroup>
                 <BButton
                     v-if="!props.minimal"
-                    v-b-tooltip.top.hover.noninteractive
+                    v-g-tooltip.top.hover
                     class="create-hist-btn"
                     data-description="create new history"
                     size="sm"
@@ -71,7 +71,7 @@ function userTitle(title: string) {
 
                 <BButton
                     v-if="!props.minimal"
-                    v-b-tooltip.top.hover.noninteractive
+                    v-g-tooltip.top.hover
                     data-description="switch to another history"
                     size="sm"
                     variant="link"

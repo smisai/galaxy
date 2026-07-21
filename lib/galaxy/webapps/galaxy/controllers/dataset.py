@@ -82,8 +82,10 @@ class DatasetInterface(BaseUIController, UsesAnnotations, UsesItemRatings, UsesE
         return "This link may not be followed from within Galaxy."
 
     @web.expose_api_raw_anonymous_and_sessionless
-    def get_metadata_file(self, trans, hda_id, metadata_name, **kwd):
+    def get_metadata_file(self, trans, hda_id=None, metadata_name=None, **kwd):
         """Allows the downloading of metadata files associated with datasets (eg. bai index for bam files)"""
+        if hda_id is None or metadata_name is None:
+            raise RequestParameterInvalidException("Required parameters 'hda_id' and 'metadata_name' are missing.")
         # Backward compatibility with legacy links, should use `/api/datasets/{hda_id}/get_metadata_file` instead
         fh, headers = self.service.get_metadata_file(
             trans, history_content_id=self.decode_id(hda_id), metadata_file=metadata_name, open_file=True
@@ -159,17 +161,8 @@ class DatasetInterface(BaseUIController, UsesAnnotations, UsesItemRatings, UsesE
             ]
             ldatatypes.sort()
 
-            private_role_emails = get_private_role_user_emails_dict(trans.sa_session)
-            role_tuples = []
-            for role in trans.app.security_agent.get_legitimate_roles(trans, data.dataset, "root"):
-                displayed_name = private_role_emails.get(role.id, role.name)
-                role_tuples.append((displayed_name, trans.security.encode_id(role.id)))
-
             data_metadata = list(data.metadata.spec.items())
             converters_collection = [(key, value.name) for key, value in data.get_converter_types().items()]
-            can_manage_dataset = trans.app.security_agent.can_manage_dataset(
-                trans.get_current_user_roles(), data.dataset
-            )
             # attribute editing
             attribute_inputs = [
                 {"name": "name", "type": "text", "label": "Name", "value": data.get_display_name()},
@@ -258,6 +251,18 @@ class DatasetInterface(BaseUIController, UsesAnnotations, UsesItemRatings, UsesE
                         {"name": "not_shareable", "type": "hidden", "label": permission_message, "readonly": True}
                     )
                 elif data.dataset.actions:
+                    can_manage_dataset = trans.app.security_agent.can_manage_dataset(
+                        trans.get_current_user_roles(), data.dataset
+                    )
+                    legitimate_roles = trans.app.security_agent.get_legitimate_roles(trans, data.dataset, "root")
+                    legitimate_role_ids = {role.id for role in legitimate_roles}
+                    private_role_emails = get_private_role_user_emails_dict(
+                        trans.sa_session, role_ids=legitimate_role_ids
+                    )
+                    role_tuples = [
+                        (private_role_emails.get(role.id, role.name), trans.security.encode_id(role.id))
+                        for role in legitimate_roles
+                    ]
                     in_roles = {}
                     for action, roles in trans.app.security_agent.get_permissions(data.dataset).items():
                         in_roles[action.action] = [trans.security.encode_id(role.id) for role in roles]
@@ -411,7 +416,7 @@ class DatasetInterface(BaseUIController, UsesAnnotations, UsesItemRatings, UsesE
     def _get_dataset_for_edit(self, trans, dataset_id):
         if dataset_id is not None:
             id = self.decode_id(dataset_id)
-            data = trans.sa_session.query(HistoryDatasetAssociation).get(id)
+            data = trans.sa_session.get(HistoryDatasetAssociation, id)
         else:
             trans.log_event("dataset_id is None, cannot load a dataset to edit.")
             return None, self.message_exception(trans, "You must provide a dataset id to edit attributes.")
@@ -594,7 +599,9 @@ class DatasetInterface(BaseUIController, UsesAnnotations, UsesItemRatings, UsesE
                             )
                         )
                     else:
-                        raise Exception(f"Attempted a view action ({app_action}) on a non-ready display application")
+                        return trans.show_error_message(
+                            f"Attempted a view action ({app_action}) on a non-ready display application"
+                        )
             return dict(msg=msg)
         return trans.show_error_message(
             "You do not have permission to view this dataset at an external display application."

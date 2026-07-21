@@ -6,15 +6,45 @@ import {
     GalaxyApi,
     type GalaxyApiPaths,
     type HDADetailed,
+    type HDASummary,
 } from "@/api";
 import { withPrefix } from "@/utils/redirect";
-import { rethrowSimple } from "@/utils/simple-error";
+import { rethrowSimple, rethrowSimpleWithStatus } from "@/utils/simple-error";
 
-export async function fetchDatasetTextContentDetails(params: { id: string }): Promise<DatasetTextContentDetails> {
-    const { data, error } = await GalaxyApi().GET("/api/datasets/{dataset_id}/get_content_as_text", {
+export interface LoadDatasetsOptions {
+    limit?: number;
+    offset?: number;
+    sortBy?: string;
+    sortDesc?: boolean;
+    search?: string;
+}
+
+export interface LoadDatasetsResult {
+    data: HDASummary[];
+    totalMatches: number;
+}
+
+interface CopyDatasetsResult {
+    copiedDatasets: Awaited<ReturnType<typeof copyDataset>>[];
+    failedDatasetIds: string[];
+}
+
+export async function loadDatasets(options: LoadDatasetsOptions): Promise<LoadDatasetsResult> {
+    const { limit = 24, offset = 0, sortBy = "update_time", sortDesc = true, search = "" } = options;
+
+    const {
+        response,
+        data: datasets,
+        error,
+    } = await GalaxyApi().GET("/api/datasets", {
         params: {
-            path: {
-                dataset_id: params.id,
+            query: {
+                q: search ? ["name-contains"] : undefined,
+                qv: search ? [search] : undefined,
+                limit,
+                offset,
+                order: `${sortBy}${sortDesc ? "-dsc" : "-asc"}`,
+                view: "summary",
             },
         },
     });
@@ -22,21 +52,41 @@ export async function fetchDatasetTextContentDetails(params: { id: string }): Pr
     if (error) {
         rethrowSimple(error);
     }
-    return data;
+
+    const totalMatches = parseInt(response.headers.get("total_matches") ?? "0", 10) || 0;
+    const data = datasets as unknown as HDASummary[];
+
+    return { data, totalMatches };
 }
 
-export async function fetchDatasetDetails(params: { id: string }, view: string = "detailed"): Promise<HDADetailed> {
-    const { data, error } = await GalaxyApi().GET("/api/datasets/{dataset_id}", {
+export async function fetchDatasetTextContentDetails(params: { id: string }): Promise<DatasetTextContentDetails> {
+    const { data, error, response } = await GalaxyApi().GET("/api/datasets/{dataset_id}/get_content_as_text", {
         params: {
             path: {
                 dataset_id: params.id,
             },
-            query: { view },
         },
     });
 
     if (error) {
-        rethrowSimple(error);
+        rethrowSimpleWithStatus(error, response);
+    }
+    return data;
+}
+
+export async function fetchDatasetDetails(params: { id: string }, signal?: AbortSignal): Promise<HDADetailed> {
+    const { data, error, response } = await GalaxyApi().GET("/api/datasets/{dataset_id}", {
+        params: {
+            path: {
+                dataset_id: params.id,
+            },
+            query: { view: "detailed" },
+        },
+        signal,
+    });
+
+    if (error) {
+        rethrowSimpleWithStatus(error, response);
     }
     return data as HDADetailed;
 }
@@ -56,17 +106,20 @@ export async function undeleteDataset(datasetId: string) {
     return data;
 }
 
-export async function purgeDataset(datasetId: string) {
-    const { data, error } = await GalaxyApi().DELETE("/api/datasets/{dataset_id}", {
+export async function deleteDataset(datasetId: string, purge: boolean = false): Promise<void> {
+    const { error } = await GalaxyApi().DELETE("/api/datasets/{dataset_id}", {
         params: {
             path: { dataset_id: datasetId },
-            query: { purge: true },
+            query: { purge },
         },
     });
     if (error) {
         rethrowSimple(error);
     }
-    return data;
+}
+
+export async function purgeDataset(datasetId: string): Promise<void> {
+    return deleteDataset(datasetId, true);
 }
 
 type CopyDatasetParamsType = GalaxyApiPaths["/api/histories/{history_id}/contents/{type}s"]["post"]["parameters"];
@@ -97,6 +150,34 @@ export async function copyDataset(
         rethrowSimple(error);
     }
     return data;
+}
+
+export async function copyDatasets(
+    datasetIds: string[],
+    historyId: CopyDatasetParamsType["path"]["history_id"],
+): Promise<CopyDatasetsResult> {
+    const BATCH_SIZE = 5;
+    const results: PromiseSettledResult<Awaited<ReturnType<typeof copyDataset>>>[] = [];
+
+    for (let i = 0; i < datasetIds.length; i += BATCH_SIZE) {
+        const batch = datasetIds.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.allSettled(batch.map((datasetId) => copyDataset(datasetId, historyId)));
+
+        results.push(...batchResults);
+    }
+
+    const copiedDatasets = [];
+    const failedDatasetIds = [];
+
+    for (const [index, result] of results.entries()) {
+        if (result.status === "fulfilled") {
+            copiedDatasets.push(result.value);
+        } else if (datasetIds[index] !== undefined) {
+            failedDatasetIds.push(datasetIds[index]);
+        }
+    }
+
+    return { copiedDatasets, failedDatasetIds };
 }
 
 export function getCompositeDatasetLink(historyDatasetId: string, path: string) {

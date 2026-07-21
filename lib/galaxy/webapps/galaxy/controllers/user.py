@@ -25,6 +25,7 @@ from galaxy.security.validate_user_input import (
     validate_publicname,
 )
 from galaxy.structured_app import StructuredApp
+from galaxy.util import now
 from galaxy.web import (
     expose_api_anonymous_and_sessionless,
     url_for,
@@ -232,9 +233,9 @@ class User(BaseUIController, UsesFormDefinitionsMixin):
             username = trans.user.username
         is_activation_sent = self.user_manager.send_activation_email(trans, email, username)
         if is_activation_sent:
-            message = f"This account has not been activated yet. The activation link has been sent again. Please check your email address <b>{escape(email)}</b> including the spam/trash folder. <a target=\"_top\" href=\"{url_for('/')}\">Return to the home page</a>."
+            message = f'This account has not been activated yet. The activation link has been sent again. Please check your email address <b>{escape(email)}</b> including the spam/trash folder. <a target="_top" href="{url_for("/")}">Return to the home page</a>.'
         else:
-            message = f"This account has not been activated yet but we are unable to send the activation link. Please contact your local Galaxy administrator. <a target=\"_top\" href=\"{url_for('/')}\">Return to the home page</a>."
+            message = f'This account has not been activated yet but we are unable to send the activation link. Please contact your local Galaxy administrator. <a target="_top" href="{url_for("/")}">Return to the home page</a>.'
             if trans.app.config.error_email_to is not None:
                 message += f" Error contact: {trans.app.config.error_email_to}."
         return message, is_activation_sent
@@ -246,7 +247,7 @@ class User(BaseUIController, UsesFormDefinitionsMixin):
         #  Activation is forced and the user is not active yet. Check the grace period.
         activation_grace_period = trans.app.config.activation_grace_period
         delta = timedelta(hours=int(activation_grace_period))
-        time_difference = datetime.utcnow() - create_time
+        time_difference = now() - create_time
         return time_difference > delta or activation_grace_period == 0
 
     @web.expose
@@ -285,7 +286,7 @@ class User(BaseUIController, UsesFormDefinitionsMixin):
         """
         params = util.Params(kwd, sanitize=False)
         activation_token = params.get("activation_token", None)
-        index_url = web.url_for(controller="root", action="index")
+        index_url = web.url_for("/")
         invalid_link_message = f"You are using an invalid activation link. Try to log in and we will send you a new activation email. <br><a href='{index_url}'>Go to login page.</a>"
 
         email = params.get("email", None)

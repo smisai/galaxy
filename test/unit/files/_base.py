@@ -14,10 +14,9 @@ from abc import (
     ABC,
     abstractmethod,
 )
+from collections.abc import Callable
 from typing import (
     Any,
-    Callable,
-    Optional,
 )
 
 import pytest
@@ -134,7 +133,7 @@ class BaseFileSourceTestSuite(ABC):
             self._upload_content_to_path(file_source, path, content, user_context)
 
     def _upload_content_to_path(
-        self, file_source: BaseFilesSource, target_path: str, content: str, user_context: Optional[Any] = None
+        self, file_source: BaseFilesSource, target_path: str, content: str, user_context: Any | None = None
     ) -> None:
         """Helper method to upload content to a specific path in the file source."""
         with tempfile.NamedTemporaryFile(mode="w") as temp_file:

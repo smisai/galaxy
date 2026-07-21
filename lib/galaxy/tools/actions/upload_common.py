@@ -7,9 +7,6 @@ from json import (
     dump,
     dumps,
 )
-from typing import (
-    Optional,
-)
 
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
@@ -81,16 +78,16 @@ def persist_uploads(params, trans):
 @dataclass
 class LibraryParams:
     roles: list[Role]
-    tags: Optional[list[str]]
-    template: Optional[FormDefinition]
+    tags: list[str] | None
+    template: FormDefinition | None
     template_field_contents: dict[str, str]
     folder: LibraryFolder
     message: str
-    replace_dataset: Optional[LibraryDataset]
+    replace_dataset: LibraryDataset | None
 
 
 def handle_library_params(
-    trans, params, folder_id: int, replace_dataset: Optional[LibraryDataset] = None
+    trans, params, folder_id: int, replace_dataset: LibraryDataset | None = None
 ) -> LibraryParams:
     session = trans.sa_session
     # FIXME: the received params has already been parsed by util.Params() by the time it reaches here,
@@ -103,12 +100,12 @@ def handle_library_params(
     folder = session.get(LibraryFolder, folder_id)
     # We are inheriting the folder's info_association, so we may have received inherited contents or we may have redirected
     # here after the user entered template contents ( due to errors ).
-    template: Optional[FormDefinition] = None
+    template: FormDefinition | None = None
     if template_id not in [None, "None"]:
         template = session.get(FormDefinition, template_id)
         if template and template.fields:
             for field in template.fields:
-                field_name = field["name"]  # type:ignore[index]
+                field_name = field["name"]  # type: ignore[index]
                 if params.get(field_name, False):
                     field_value = util.restore_text(params.get(field_name, ""))
                     template_field_contents[field_name] = field_value
@@ -381,7 +378,17 @@ def create_paramfile(trans, uploaded_datasets):
     return json_file_path
 
 
-def create_job(trans, params, tool, json_file_path, outputs, folder=None, history=None, job_params=None):
+def create_job(
+    trans,
+    params,
+    tool,
+    json_file_path,
+    outputs,
+    folder=None,
+    history=None,
+    job_params=None,
+    preferred_object_store_id=None,
+):
     """
     Create the upload job.
     """
@@ -393,6 +400,7 @@ def create_job(trans, params, tool, json_file_path, outputs, folder=None, histor
         job.session_id = galaxy_session.id
     if trans.user is not None:
         job.user_id = trans.user.id
+    job.preferred_object_store_id = preferred_object_store_id
     if folder:
         job.library_folder_id = folder.id
     else:

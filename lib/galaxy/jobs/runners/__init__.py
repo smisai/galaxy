@@ -18,7 +18,6 @@ from queue import (
 from typing import (
     Any,
     Generic,
-    Optional,
     TYPE_CHECKING,
     TypeVar,
     Union,
@@ -48,6 +47,7 @@ from galaxy.tool_util.deps.dependencies import (
     ToolInfo,
 )
 from galaxy.tool_util.output_checker import DETECTED_JOB_STATE
+from galaxy.tools.parameters.basic import ParameterValueError
 from galaxy.util import (
     asbool,
     DATABASE_MAX_STRING_SIZE,
@@ -143,12 +143,12 @@ class BaseJobRunner:
                         alive = True
                     yield thread
 
-    def run_next(self):
+    def run_next(self) -> None:
         """Run the next item in the work queue (a job waiting to run)"""
         while self._should_stop is False:
             with self.app.model.session():  # Create a Session instance and ensure it's closed.
                 try:
-                    (method, arg) = self.work_queue.get(timeout=1)
+                    method, arg = self.work_queue.get(timeout=1)
                 except Empty:
                     continue
                 if method is STOP_SIGNAL:
@@ -180,7 +180,7 @@ class BaseJobRunner:
                 except Exception:
                     log.exception(f"({job_id}) Unhandled exception calling {name}")
                     if not isinstance(arg, JobState):
-                        job_state = JobState(job_wrapper=arg, job_destination={})
+                        job_state = JobState(job_wrapper=arg, job_destination=JobDestination())
                     else:
                         job_state = arg
                     if method != self.fail_job:
@@ -308,6 +308,10 @@ class BaseJobRunner:
                 modify_command_for_container=modify_command_for_container,
                 stream_stdout_stderr=stream_stdout_stderr,
             )
+        except ParameterValueError as e:
+            log.info("(%s) parameter validation error preparing job: %s", job_id, unicodify(e))
+            job_wrapper.fail(unicodify(e), exception=False)
+            return False
         except Exception as e:
             log.exception("(%s) Failure preparing job", job_id)
             job_wrapper.fail(unicodify(e), exception=True)
@@ -353,8 +357,8 @@ class BaseJobRunner:
     def get_work_dir_outputs(
         self,
         job_wrapper: "MinimalJobWrapper",
-        job_working_directory: Optional[str] = None,
-        tool_working_directory: Optional[str] = None,
+        job_working_directory: str | None = None,
+        tool_working_directory: str | None = None,
     ):
         """
         Returns list of pairs (source_file, destination) describing path
@@ -420,6 +424,7 @@ class BaseJobRunner:
 
     def _walk_dataset_outputs(self, job: model.Job):
         for dataset_assoc in job.output_datasets + job.output_library_datasets:
+            assert dataset_assoc.dataset.dataset is not None
             for dataset in (
                 dataset_assoc.dataset.dataset.history_associations + dataset_assoc.dataset.dataset.library_associations
             ):
@@ -537,10 +542,10 @@ class BaseJobRunner:
     def _find_container(
         self,
         job_wrapper: "MinimalJobWrapper",
-        compute_working_directory: Optional[str] = None,
-        compute_tool_directory: Optional[str] = None,
-        compute_job_directory: Optional[str] = None,
-        compute_tmp_directory: Optional[str] = None,
+        compute_working_directory: str | None = None,
+        compute_tool_directory: str | None = None,
+        compute_job_directory: str | None = None,
+        compute_tmp_directory: str | None = None,
     ):
         job_directory_type = "galaxy" if compute_working_directory is None else "pulsar"
         if not compute_working_directory:
@@ -597,7 +602,7 @@ class BaseJobRunner:
         job_state: "JobState",
         exception: bool = False,
         message: str = "Job failed",
-        full_status: Union[dict[str, Any], None] = None,
+        full_status: dict[str, Any] | None = None,
     ) -> None:
         job = job_state.job_wrapper.get_job()
         if job_state.stop_job and job.state != model.Job.states.NEW:
@@ -617,7 +622,7 @@ class BaseJobRunner:
                 fail_message, tool_stdout=tool_stdout, tool_stderr=tool_stderr, exception=exception
             )
 
-    def mark_as_resubmitted(self, job_state: "JobState", info: Optional[str] = None):
+    def mark_as_resubmitted(self, job_state: "JobState", info: str | None = None):
         job_state.job_wrapper.mark_as_resubmitted(info=info)
         if not self.app.config.track_jobs_in_database:
             assert self.app.job_manager.job_handler.dispatcher
@@ -781,7 +786,7 @@ class AsynchronousJobState(JobState):
         job_destination: JobDestination,
         *,
         files_dir=None,
-        job_id: Union[str, None] = None,
+        job_id: str | None = None,
         job_file=None,
         output_file=None,
         error_file=None,
@@ -792,7 +797,7 @@ class AsynchronousJobState(JobState):
         self.old_state = None
         self._running = False
         self.check_count = 0
-        self.start_time: Union[datetime.datetime, None] = None
+        self.start_time: datetime.datetime | None = None
 
         # job_id is the DRM's job id, not the Galaxy job id
         self.job_id = job_id
@@ -907,7 +912,11 @@ class AsynchronousJobRunner(BaseJobRunner, Monitors, Generic[T]):
             finally:
                 self.app.model.unset_request_id(scoped_id)
             # Sleep a bit before the next state check
-            time.sleep(self.app.config.job_runner_monitor_sleep)
+            time.sleep(self.monitor_sleep_time)
+
+    @property
+    def monitor_sleep_time(self):
+        return self.app.config.job_runner_monitor_sleep
 
     def monitor_job(self, job_state: T) -> None:
         self.monitor_queue.put(job_state)
@@ -936,10 +945,10 @@ class AsynchronousJobRunner(BaseJobRunner, Monitors, Generic[T]):
         self.watched = new_watched
 
     # Subclasses should implement this unless they override check_watched_items all together.
-    def check_watched_item(self, job_state: T) -> Union[T, None]:
+    def check_watched_item(self, job_state: T) -> T | None:
         raise NotImplementedError()
 
-    def _collect_job_output(self, job_id: int, external_job_id: Optional[str], job_state: JobState):
+    def _collect_job_output(self, job_id: int, external_job_id: str | None, job_state: JobState):
         # wait for the files to appear
         which_try = 0
         collect_output_success = True

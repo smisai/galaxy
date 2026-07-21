@@ -1,10 +1,10 @@
 import json
+from typing import Literal
 from uuid import uuid4
 
 import yaml
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from typing_extensions import Literal
 
 from galaxy_test.base import rules_test_data
 from galaxy_test.base.workflow_fixtures import (
@@ -21,12 +21,15 @@ from galaxy_test.base.workflow_fixtures import (
     WORKFLOW_WITH_CUSTOM_REPORT_1_TEST_DATA,
     WORKFLOW_WITH_DATA_TAG_FILTER,
     WORKFLOW_WITH_DYNAMIC_OUTPUT_COLLECTION,
+    WORKFLOW_WITH_IMAGES_IN_REPORT,
+    WORKFLOW_WITH_IMAGES_IN_REPORT_TEST_DATA,
     WORKFLOW_WITH_MAPPED_OUTPUT_COLLECTION,
     WORKFLOW_WITH_OLD_TOOL_VERSION,
     WORKFLOW_WITH_RULES_1,
 )
 from .framework import (
     managed_history,
+    retry_assertion_during_transitions,
     RunsWorkflows,
     selenium_only,
     selenium_test,
@@ -34,6 +37,16 @@ from .framework import (
     UsesHistoryItemAssertions,
 )
 from .test_workflow_editor import CHIPSEQ_COLUMNS
+
+# Single cat1 step with no workflow-level ``inputs`` — the step's ``input1``
+# stays unconnected so the run form renders it as a dropdown via
+# ``WorkflowRunDefaultStep``, exercising our paginated tool-step handlers.
+WORKFLOW_CAT1_NO_INPUTS = """
+class: GalaxyWorkflow
+steps:
+  cat_step:
+    tool_id: cat1
+"""
 
 
 class TestWorkflowRun(SeleniumTestCase, UsesHistoryItemAssertions, RunsWorkflows):
@@ -49,7 +62,7 @@ class TestWorkflowRun(SeleniumTestCase, UsesHistoryItemAssertions, RunsWorkflows
         invocations.export_tab_disabled.wait_for_absent()
         invocations.export_tab.wait_for_and_click()
         self.screenshot("invocation_export_formats")
-        invocations.export_output_format(type="ro-crate").wait_for_and_click()
+        invocations.export_output_format(type="rocrate.zip").wait_for_and_click()
         invocations.wizard_next_button.wait_for_and_click()
         download_option = invocations.export_destination(destination="download")
         download_option.wait_for_present()
@@ -75,7 +88,7 @@ class TestWorkflowRun(SeleniumTestCase, UsesHistoryItemAssertions, RunsWorkflows
         invocations.export_tab_disabled.wait_for_absent()
         invocations.export_tab.wait_for_and_click()
         self.screenshot("invocation_export_formats")
-        invocations.export_output_format(type="default-file").wait_for_and_click()
+        invocations.export_output_format(type="tgz").wait_for_and_click()
         invocations.wizard_next_button.wait_for_and_click()
         download_option = invocations.export_destination(destination="download")
         download_option.wait_for_present()
@@ -105,6 +118,107 @@ class TestWorkflowRun(SeleniumTestCase, UsesHistoryItemAssertions, RunsWorkflows
         self.workflow_run_wait_for_ok(hid=2, expand=True)
         self.assert_item_summary_includes(2, "2 sequences")
         self.screenshot("workflow_run_simple_complete")
+
+    @selenium_test
+    def test_workflow_run_pagination_legacy_form(self):
+        """Pagination + backend search on a workflow run form's tool-step
+        dropdown. Uses the legacy/expanded form (the default), where the
+        tool step is rendered via ``WorkflowRunDefaultStep`` — this is the
+        component we wired ``onLoadMore`` / ``onSearchChange`` into. Seeds 60
+        HDAs so the default 50-per-page cap is in effect, then types a query
+        and asserts the dropdown narrows to the backend-matched options."""
+        history_id = self.current_history_id()
+        self.dataset_populator.fetch_hdas(history_id, [{"src": "pasted", "paste_content": "x"}] * 60)
+        # Sentinel-named HDA so we can prove options are *actually rendering*
+        # (a vacuous pass — empty dropdown — would clear the ``<= 50`` upper bound).
+        legacy_sentinel = "unique-pagination-sentinel"
+        self.dataset_populator.fetch_hdas(
+            history_id,
+            [{"src": "pasted", "paste_content": "y", "name": legacy_sentinel}],
+        )
+        self.home()
+        # A single cat1 step with no workflow-level inputs — the step's
+        # ``input1`` is unconnected, so it renders as a dropdown the user
+        # picks from. This lands us in ``WorkflowRunDefaultStep``.
+        self.workflow_run_open_workflow(WORKFLOW_CAT1_NO_INPUTS)
+        self.workflow_run_ensure_expanded()
+        select_field = self.components.tool_form.parameter_data_select(parameter="input1").wait_for_visible()
+        # Open the dropdown so its options render in the DOM, then type into
+        # the multiselect's search input. The debounced ``search-change``
+        # bubbles through ``FormDisplay → WorkflowRunDefaultStep`` and refetches
+        # via ``getTool`` with ``options_pagination[input1][hda].search="1"``.
+        select_field.find_element(By.CSS_SELECTOR, ".multiselect__select").click()
+        self.sleep_for(self.wait_types.UX_RENDER)
+        baseline_options = select_field.find_elements(By.CSS_SELECTOR, "[role='option']")
+        assert len(baseline_options) <= 50, f"Expected default page to cap at 50 options, got {len(baseline_options)}"
+        # Positive lower-bound: the sentinel HDA is newest (hid=61) so it must
+        # appear in the first page of (newest-first) options. Without this the
+        # ``<= 50`` upper bound passes vacuously on an empty dropdown.
+        baseline_labels = [opt.text for opt in baseline_options]
+        assert any(legacy_sentinel in label for label in baseline_labels), baseline_labels
+        search_input = select_field.find_element(By.CSS_SELECTOR, "input.multiselect__input")
+        search_input.send_keys("1")
+        # Wait past the FormSelect search debounce (300 ms) plus the network
+        # round-trip — UX_TRANSITION is a generous ~1s.
+        self.sleep_for(self.wait_types.UX_TRANSITION)
+
+        @retry_assertion_during_transitions
+        def assert_search_narrowed():
+            options = select_field.find_elements(By.CSS_SELECTOR, "[role='option']")
+            assert len(options) > 0, "Expected at least one match for query '1' (e.g. hid=1)"
+            # All visible labels should contain '1' somewhere — either in the
+            # numeric hid prefix (hid=1, 10, 11, ...) or in the name.
+            labels = [opt.text for opt in options]
+            assert all("1" in label for label in labels), labels
+
+        assert_search_narrowed()
+
+    @selenium_test
+    def test_workflow_run_pagination_simplified_form(self):
+        """The simplified workflow run form (``WorkflowRunFormSimple``) only
+        renders workflow-level inputs. With 60 datasets in history and the
+        backend's default 50-per-page cap, the dropdown for a workflow
+        ``input1: data`` step must show no more than 50 options — proves
+        pagination is in effect even though the simplified form's step
+        component doesn't yet wire interactive load-more."""
+        history_id = self.current_history_id()
+        self.dataset_populator.fetch_hdas(history_id, [{"src": "pasted", "paste_content": "x"}] * 60)
+        # Sentinel for positive lower-bound (see legacy-form test).
+        simplified_sentinel = "unique-simplified-sentinel"
+        self.dataset_populator.fetch_hdas(
+            history_id,
+            [{"src": "pasted", "paste_content": "y", "name": simplified_sentinel}],
+        )
+        self.home()
+        self.workflow_run_open_workflow(WORKFLOW_SIMPLE_CAT_TWICE)
+        # Ensure the legacy/expanded form is fully rendered before reaching for
+        # its toggle button — otherwise the form may still be loading when the
+        # XPath wait fires (the default 10s window isn't always enough on CI).
+        # ``workflow_run_ensure_expanded`` is a no-op when already in legacy
+        # mode but waits on ``run_workflow`` and ``expanded_form`` first.
+        self.workflow_run_ensure_expanded()
+        # Click the "Simple Form" toggle to switch to ``WorkflowRunFormSimple``.
+        # Use a text-based XPath because ``v-g-tooltip`` rewrites the title
+        # attribute and the button isn't yet in ``navigation.yml`` — and
+        # ``wait_for_xpath`` works on both Selenium and Playwright backends,
+        # unlike ``self.driver.find_element`` which is Selenium-only.
+        self.wait_for_xpath('//button[contains(., "Simple Form")]').click()
+        self.sleep_for(self.wait_types.UX_RENDER)
+        # The simplified form renders workflow inputs via ``FormDisplay``; the
+        # ``input1`` data dropdown lands in a multiselect we can locate by
+        # the parameter's data-label.
+        select_field = self.components.workflow_run.input_select_field(label="input1").wait_for_visible()
+        select_field.find_element(By.CSS_SELECTOR, ".multiselect__select").click()
+        self.sleep_for(self.wait_types.UX_RENDER)
+        options = select_field.find_elements(By.CSS_SELECTOR, "[role='option']")
+        assert (
+            len(options) <= 50
+        ), f"Simplified form dropdown must respect the 50-per-page cap; got {len(options)} options"
+        # Positive lower-bound: the sentinel HDA is newest (hid=61) so it must
+        # appear in the first page of options. Without this the ``<= 50`` upper
+        # bound passes vacuously on an empty dropdown.
+        labels = [opt.text for opt in options]
+        assert any(simplified_sentinel in label for label in labels), labels
 
     @selenium_only("Not yet migrated to support Playwright backend")
     @selenium_test
@@ -399,8 +513,7 @@ SRR5681005\tinput\t\t
     @selenium_test
     @managed_history
     def test_runtime_parameters_simple_optional(self):
-        self.workflow_run_open_workflow(
-            """
+        self.workflow_run_open_workflow("""
 class: GalaxyWorkflow
 inputs: {}
 steps:
@@ -408,8 +521,7 @@ steps:
     tool_id: expression_null_handling_integer
     runtime_inputs:
       - int_input
-"""
-        )
+""")
         self.tool_parameter_div("int_input")
         self._set_num_lines_to_3("int_input")
         self.screenshot("workflow_run_optional_runtime_parameters_modified")
@@ -473,8 +585,7 @@ steps:
     def test_step_parameter_inputs(self):
         self.perform_upload(self.get_filename("1.txt"))
         self.wait_for_history()
-        self.workflow_run_open_workflow(
-            """
+        self.workflow_run_open_workflow("""
 class: GalaxyWorkflow
 inputs:
   input_int: integer
@@ -486,8 +597,7 @@ steps:
     in:
       inttest: input_int
       files_0|file: input_data
-"""
-        )
+""")
         self.workflow_run_ensure_expanded()
         workflow_run = self.components.workflow_run
         input_div_element = workflow_run.input_div(label="input_int").wait_for_visible()
@@ -569,8 +679,7 @@ steps:
     @selenium_test
     @managed_history
     def test_execution_with_text_default_value_connected_to_restricted_select(self):
-        self.workflow_run_open_workflow(
-            """
+        self.workflow_run_open_workflow("""
 class: GalaxyWorkflow
 inputs:
   text_param:
@@ -584,8 +693,7 @@ steps:
     in:
       select_ex:
         source: text_param
-"""
-        )
+""")
         element = self.components.workflow_run.input_select_field(label="text_param").wait_for_present()
         assert element.text == "Ex2"
         self.workflow_run_submit()
@@ -625,6 +733,25 @@ steps:
 
     @selenium_test
     @managed_history
+    def test_execution_with_images_in_report(self):
+        """Test that images render correctly in workflow reports, including inline images in tables."""
+        history_id = self.workflow_run_and_submit(
+            WORKFLOW_WITH_IMAGES_IN_REPORT,
+            WORKFLOW_WITH_IMAGES_IN_REPORT_TEST_DATA,
+            ensure_expanded=True,
+        )
+        self.screenshot("workflow_run_images_in_report_invocation")
+        self.workflow_populator.wait_for_history_workflows(history_id, expected_invocation_count=1)
+        invocation_0 = self.workflow_populator.history_invocations(history_id)[0]
+        self.get(f"workflows/invocations/report?id={invocation_0['id']}")
+        self.wait_for_selector_visible(".markdown-component")
+        self.screenshot("workflow_report_images_rendered")
+        # Wait for the table to be present - this verifies the inline ${galaxy ...} syntax works
+        self.wait_for_selector_visible("table")
+        self.screenshot("workflow_report_with_table")
+
+    @selenium_test
+    @managed_history
     def test_execution_with_null_optional_select_from_data(self):
         history_id = self.workflow_run_and_submit(
             WORKFLOW_SELECT_FROM_OPTIONAL_DATASET,
@@ -634,8 +761,7 @@ steps:
     @selenium_test
     @managed_history
     def test_workflow_run_button_disabled_when_required_input_missing(self):
-        self.workflow_run_open_workflow(
-            """
+        self.workflow_run_open_workflow("""
 class: GalaxyWorkflow
 inputs:
   text_param:
@@ -646,8 +772,7 @@ inputs:
   collection_param:
     type: data_collection
 steps: {}
-"""
-        )
+""")
         workflow_run = self.components.workflow_run
         # None of the required parameters are present
         workflow_run.run_workflow_disabled.wait_for_present()

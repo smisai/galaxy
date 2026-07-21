@@ -3,7 +3,6 @@ import logging
 import os
 from typing import (
     TYPE_CHECKING,
-    Union,
 )
 
 from galaxy import model
@@ -205,7 +204,7 @@ class ChronosJobRunner(AsynchronousJobRunner[AsynchronousJobState]):
             self.monitor_queue.put(ajs)
 
     @handle_exception_call
-    def check_watched_item(self, job_state: AsynchronousJobState) -> Union[AsynchronousJobState, None]:
+    def check_watched_item(self, job_state: AsynchronousJobState) -> AsynchronousJobState | None:
         job_name = job_state.job_id
         # TODO: how can stopped GxIT jobs be handled here?
         if job := self._retrieve_job(job_name):
@@ -273,7 +272,7 @@ class ChronosJobRunner(AsynchronousJobRunner[AsynchronousJobState]):
         if not os.path.exists(job_wrapper.working_directory):
             LOGGER.error("No working directory found")
 
-        path = f"{job_wrapper.working_directory}/chronos_{job_wrapper.get_id_tag()}.sh"
+        path = os.path.join(job_wrapper.working_directory, f"chronos_{job_wrapper.get_id_tag()}.sh")
         mode = 0o755
 
         with open(path, "w", encoding="utf-8") as f:

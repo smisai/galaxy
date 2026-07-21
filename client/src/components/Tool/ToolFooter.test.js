@@ -36,11 +36,11 @@ const citationsB = [
 vi.mock("@/components/Citation/services", () => ({
     getCitations: vi.fn((source, id) => {
         if (id === "tool_a") {
-            return Promise.resolve(citationsA);
+            return Promise.resolve({ citations: citationsA, warnings: [] });
         } else if (id === "tool_b") {
-            return Promise.resolve(citationsB);
+            return Promise.resolve({ citations: citationsB, warnings: [] });
         }
-        return Promise.resolve([]);
+        return Promise.resolve({ citations: [], warnings: [] });
     }),
 }));
 
@@ -63,13 +63,13 @@ describe("ToolFooter", () => {
                 License: true,
                 Creators: true,
                 FontAwesomeIcon: true,
+                Heading: true,
             },
         });
     });
 
     it("check props", async () => {
         await flushPromises();
-        expect(wrapper.findAll(".footer-section-name").at(0).text()).toBeLocalizationOf("References");
         const referenceA = wrapper.find(".formatted-reference .csl-entry");
         expect(referenceA.attributes()["data-csl-entry-id"]).toBe("entry_a");
         expect(referenceA.text()).toContain("1111");

@@ -13,7 +13,6 @@ import tempfile
 import time
 from typing import (
     Any,
-    Optional,
 )
 from urllib.parse import urlparse
 
@@ -74,10 +73,10 @@ class AscpFileSystem(AbstractFileSystem):
     def __init__(
         self,
         ssh_key: str,
-        ssh_key_passphrase: Optional[str] = None,
+        ssh_key_passphrase: str | None = None,
         ascp_path: str = "ascp",
-        user: Optional[str] = None,
-        host: Optional[str] = None,
+        user: str | None = None,
+        host: str | None = None,
         rate_limit: str = "300m",
         port: int = 33001,
         disable_encryption: bool = True,
@@ -237,8 +236,9 @@ class AscpFileSystem(AbstractFileSystem):
             if self.disable_encryption:
                 cmd.append("-T")
 
-            # Add resume flag if enabled and this is a retry attempt
-            if self.enable_resume and attempt > 0:
+            # Add resume flag if enabled
+            # Note that this must be specified for your first transfer; otherwise, it will not work for subsequent transfers
+            if self.enable_resume:
                 cmd.extend(["-k", "1"])  # Resume level 1: check file size
                 log.debug(f"Resume enabled for retry attempt {attempt + 1}")
 
@@ -327,6 +327,8 @@ class AscpFileSystem(AbstractFileSystem):
             "timed out",
             "refused",
             "unreachable",
+            "session stop",  # Session Stop  (Error: Client unable to connect to server (check UDP port and firewall))
+            "connect via ssh",  # Unable to connect via SSH, exiting
         ]
 
         return any(pattern in error_msg for pattern in retryable_patterns)

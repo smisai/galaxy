@@ -1,6 +1,5 @@
 from typing import (
     cast,
-    List,
 )
 from uuid import uuid4
 
@@ -46,27 +45,25 @@ CLIENT_SECRET = "mycoolsecret"
 
 
 class MockApp:
-
     @property
     def toolbox(self):
         return MockToolbox()
 
 
 class MockToolbox:
-
     def get_tool(self, tool_id, tool_uuid, tool_version, user):
         return MockTool()
 
 
 class MockTool:
+    id = TEST_TOOL_ID
 
     @property
-    def parameters(self) -> List[ToolParameterT]:
+    def parameters(self) -> list[ToolParameterT]:
         return [DataParameterModel(type="data", name="input1")]
 
 
 class TestLanding(BaseTestCase):
-
     def setUp(self):
         super().setUp()
         self.workflow_contents_manager = WorkflowContentsManager(self.app, self.app.trs_proxy)
@@ -75,6 +72,7 @@ class TestLanding(BaseTestCase):
             self.app.security,
             self.workflow_contents_manager,
             cast(MinimalManagerApp, MockApp()),
+            self.app.config,
         )
         self.trans.app.trs_proxy = TrsProxy(GalaxyAppConfiguration(override_tempdir=False))
 

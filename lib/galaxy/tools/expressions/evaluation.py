@@ -21,9 +21,9 @@ NODE_ENGINE = os.path.join(FILE_DIRECTORY, "cwlNodeEngine.js")
 def do_eval(
     expression: str,
     jobinput: CWLObjectType,
-    javascript_requirements: Optional[list[JavascriptRequirement]] = None,
-    outdir: Optional[str] = None,
-    tmpdir: Optional[str] = None,
+    javascript_requirements: list[JavascriptRequirement] | None = None,
+    outdir: str | None = None,
+    tmpdir: str | None = None,
     context: Optional["CWLOutputType"] = None,
 ):
     requirements: list[CWLObjectType] = []
@@ -66,7 +66,7 @@ def evaluate(config, input):
     )
     input_str = f"{json.dumps(new_input)}\n\n"
     input_bytes = input_str.encode("utf-8")
-    (stdoutdata, stderrdata) = sp.communicate(input_bytes)
+    stdoutdata, stderrdata = sp.communicate(input_bytes)
     if sp.returncode != 0:
         message = f"Expression engine returned non-zero exit code on evaluation of\n{json.dumps(new_input, indent=4)}{stdoutdata}{stderrdata}"
         raise Exception(message)

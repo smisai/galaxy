@@ -117,8 +117,7 @@ class PithosObjectStore(CachingConcreteObjectStore):
     def _authenticate(self):
         auth = self.config_dict["auth"]
         url, token = auth["url"], auth["token"]
-        ca_certs = auth.get("ca_certs")
-        if ca_certs:
+        if ca_certs := auth.get("ca_certs"):
             utils.https.patch_with_certs(ca_certs)
         elif auth.get("ignore_ssl").lower() in ("true", "yes", "on"):
             utils.https.patch_ignore_ssl()
@@ -145,7 +144,8 @@ class PithosObjectStore(CachingConcreteObjectStore):
 
     def _download(self, rel_path):
         local_destination = self._get_cache_path(rel_path)
-        self.pithos.download_object(rel_path, local_destination)
+        with self._atomic_download(local_destination) as tmp:
+            self.pithos.download_object(rel_path, tmp)
 
     # No need to overwrite "shutdown"
 
@@ -240,7 +240,7 @@ class PithosObjectStore(CachingConcreteObjectStore):
             log.exception(f"Could not delete path '{path}' from Pithos")
             return False
 
-    def _get_object_url(self, obj, **kwargs):
+    def _get_object_url(self, obj, content_disposition=None, content_type=None, **kwargs):
         """
         :returns: URL for direct access, None if no object
         """

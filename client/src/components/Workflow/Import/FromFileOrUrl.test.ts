@@ -1,8 +1,10 @@
 import { getLocalVue } from "@tests/vitest/helpers";
 import { mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
+import VueRouter from "vue-router";
 
-import FromFileOrUrl from "./FromFileOrUrl.vue";
+import FromFile from "./FromFile.vue";
+import FromUrl from "./FromUrl.vue";
 
 let lastPostRequest: Map<string, string>;
 
@@ -16,15 +18,17 @@ vi.mock("axios", () => ({
 }));
 
 const localVue = getLocalVue(true);
+localVue.use(VueRouter);
 
 const sharedUrl = "http://127.0.0.1:8081/u/admin/w/unnamed-workflow";
 const sharedUrlTrailingSlash = "http://127.0.0.1:8081/u/admin/w/unnamed-workflow/";
 const sharedUrlJson = "http://127.0.0.1:8081/u/admin/w/unnamed-workflow/json";
 const invalidUrl = "http://127.0.0.1:8081/u/admin/w/unnamed-workflow/additional-stuff/";
 
-describe("FromFileOrUrl", () => {
+describe("FromUrl", () => {
     it("converts shared urls to json urls", async () => {
-        const wrapper = mount(FromFileOrUrl as object, { localVue });
+        const router = new VueRouter();
+        const wrapper = mount(FromUrl as object, { localVue, router });
 
         {
             const input = wrapper.find("#workflow-import-url-input");
@@ -65,5 +69,13 @@ describe("FromFileOrUrl", () => {
 
             expect(lastPostRequest.get("archive_source")).toEqual(invalidUrl);
         }
+    });
+});
+
+describe("FromFile", () => {
+    it("can mount the component", async () => {
+        const router = new VueRouter();
+        const wrapper = mount(FromFile as object, { localVue, router });
+        expect(wrapper.find("form").exists()).toBe(true);
     });
 });

@@ -1,11 +1,10 @@
 from datetime import datetime
 from enum import Enum
 from typing import (
-    Union,
+    Literal,
 )
 
 from pydantic import Field
-from typing_extensions import Literal
 
 from galaxy.schema.fields import (
     DecodedDatabaseIdField,
@@ -30,7 +29,7 @@ class CleanableItemsSummary(Model):
     )
 
 
-StoredItemType = Union[Literal["history"], Literal["dataset"]]
+StoredItemType = Literal["history"] | Literal["dataset"]
 
 
 class StoredItem(Model):

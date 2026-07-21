@@ -1,7 +1,9 @@
 import re
+from collections.abc import Callable
+from types import UnionType
 from typing import (
     Annotated,
-    Callable,
+    get_args,
     get_origin,
     TYPE_CHECKING,
     Union,
@@ -14,9 +16,6 @@ from pydantic import (
     WithJsonSchema,
 )
 from pydantic_core import PydanticCustomError
-from typing_extensions import (
-    get_args,
-)
 
 from galaxy.exceptions import MessageException
 
@@ -147,7 +146,7 @@ def literal_to_value(arg):
 
 def is_optional(field):
     args = get_args(field)
-    return get_origin(field) is Union and len(args) == 2 and type(None) in args
+    return get_origin(field) in (Union, UnionType) and len(args) == 2 and type(None) in args
 
 
 def ModelClassField(default_value):

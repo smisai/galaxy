@@ -2,12 +2,12 @@ from collections.abc import Sequence
 from typing import (
     Any,
     cast,
-    Union,
+    Literal,
 )
 
 from fastapi._compat.v2 import (
     _has_computed_fields,
-    _remap_definitions_and_field_mappings,
+    GenerateJsonSchema as GenerateJsonSchema,
     get_flat_models_from_fields,
     ModelField,
 )
@@ -15,10 +15,8 @@ from fastapi.openapi.constants import REF_TEMPLATE
 from fastapi.types import ModelNameMap
 from pydantic.fields import FieldInfo as FieldInfo
 from pydantic.json_schema import (
-    GenerateJsonSchema as GenerateJsonSchema,
     JsonSchemaValue as JsonSchemaValue,
 )
-from typing_extensions import Literal
 
 
 def get_definitions(
@@ -26,7 +24,7 @@ def get_definitions(
     fields: Sequence[ModelField],
     model_name_map: ModelNameMap,
     separate_input_output_schemas: bool = True,
-    schema_generator: Union[GenerateJsonSchema, None] = None,
+    schema_generator: GenerateJsonSchema | None = None,
 ) -> tuple[
     dict[tuple[ModelField, Literal["validation", "serialization"]], JsonSchemaValue],
     dict[str, dict[str, Any]],
@@ -53,8 +51,8 @@ def get_definitions(
         for model in flat_serialization_models
     ]
     flat_model_fields = flat_validation_model_fields + flat_serialization_model_fields
-    input_types = {f.type_ for f in fields}
-    unique_flat_model_fields = {f for f in flat_model_fields if f.type_ not in input_types}
+    input_types = {f.field_info.annotation for f in fields}
+    unique_flat_model_fields = {f for f in flat_model_fields if f.field_info.annotation not in input_types}
     inputs = [
         (
             field,
@@ -68,9 +66,9 @@ def get_definitions(
         if "description" in item_def:
             item_description = cast(str, item_def["description"]).split("\f")[0]
             item_def["description"] = item_description
-    new_mapping, new_definitions = _remap_definitions_and_field_mappings(
-        model_name_map=model_name_map,
-        definitions=definitions,  # type: ignore[arg-type]
-        field_mapping=field_mapping,
-    )
-    return new_mapping, new_definitions
+    # definitions: dict[DefsRef, dict[str, Any]]
+    # but mypy complains about general str in other places that are not declared as
+    # DefsRef, although DefsRef is just str:
+    # DefsRef = NewType('DefsRef', str)
+    # So, a cast to simplify the types here
+    return field_mapping, cast(dict[str, dict[str, Any]], definitions)

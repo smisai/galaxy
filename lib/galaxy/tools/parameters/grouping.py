@@ -4,14 +4,16 @@ Constructs for grouping tool parameters
 
 import io
 import logging
+import math
 import os
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import (
+    Callable,
+    Mapping,
+)
 from math import inf
 from typing import (
     Any,
-    Callable,
-    Optional,
     TYPE_CHECKING,
 )
 
@@ -171,8 +173,9 @@ class Repeat(Group):
         rval = []
         for i in range(self.default):
             rval_dict = {"__index__": i}
+            child_context = ExpressionContext(rval_dict, context)
             for input in self.inputs.values():
-                rval_dict[input.name] = input.get_initial_value(trans, context)
+                rval_dict[input.name] = input.get_initial_value(trans, child_context)
             rval.append(rval_dict)
         return rval
 
@@ -180,6 +183,8 @@ class Repeat(Group):
         if self.inputs is None:
             raise Exception("Must set 'inputs' attribute to use.")
         repeat_dict = super().to_dict(trans)
+        if math.isinf(repeat_dict.get("max", 0)):
+            repeat_dict["max"] = None
 
         def input_to_dict(input):
             return input.to_dict(trans)
@@ -258,10 +263,10 @@ class Dataset(Bunch):
     datatype: data.Data
     warnings: list[str]
     metadata: dict[str, str]
-    composite_files: dict[str, Optional[str]]
-    uuid: Optional[str]
-    tag_using_filenames: Optional[str]
-    tags: Optional[str]
+    composite_files: dict[str, str | None]
+    uuid: str | None
+    tag_using_filenames: str | None
+    tags: str | None
     name: str
     primary_file: str
     to_posix_lines: bool
@@ -747,9 +752,9 @@ class Conditional(Group):
 
     def __init__(self, name: str):
         Group.__init__(self, name)
-        self.test_param: Optional[ToolParameter] = None
+        self.test_param: ToolParameter | None = None
         self.cases = []
-        self.value_ref: Optional[str] = None
+        self.value_ref: str | None = None
         self.value_ref_in_group = True  # When our test_param is not part of the conditional Group, this is False
 
     @property

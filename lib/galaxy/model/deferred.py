@@ -4,8 +4,6 @@ import os
 import shutil
 from typing import (
     NamedTuple,
-    Optional,
-    Union,
 )
 
 from sqlalchemy.orm import Session
@@ -16,7 +14,10 @@ from galaxy.datatypes.sniff import (
     stream_url_to_file,
 )
 from galaxy.exceptions import ObjectAttributeInvalidException
-from galaxy.files import ConfiguredFileSources
+from galaxy.files import (
+    ConfiguredFileSources,
+    OptionalUserContext,
+)
 from galaxy.model import (
     Dataset,
     DatasetCollection,
@@ -75,28 +76,34 @@ class DatasetInstanceMaterializer:
     def __init__(
         self,
         attached: bool,
-        object_store_populator: Optional[ObjectStorePopulator] = None,
-        transient_path_mapper: Optional[TransientPathMapper] = None,
-        file_sources: Optional[ConfiguredFileSources] = None,
-        sa_session: Optional[Session] = None,
+        object_store_populator: ObjectStorePopulator | None = None,
+        transient_path_mapper: TransientPathMapper | None = None,
+        file_sources: ConfiguredFileSources | None = None,
+        sa_session: Session | None = None,
+        user_context: OptionalUserContext = None,
     ):
         """Constructor for DatasetInstanceMaterializer.
 
         If attached is true, these objects should be created in a supplied object store.
         If not, this class produces transient HDAs with external_filename and
         external_extra_files_path set.
+
+        ``user_context`` is forwarded to file source operations so that access
+        controls (``requires_roles`` / ``requires_groups``) are enforced when
+        materializing from ``gxfiles://`` URIs.
         """
         self._attached = attached
         self._transient_path_mapper = transient_path_mapper
         self._object_store_populator = object_store_populator
         self._file_sources = file_sources
         self._sa_session = sa_session
+        self._user_context = user_context
         self._previously_materialized: dict[int, HistoryDatasetAssociation] = {}
 
     def ensure_materialized(
         self,
-        dataset_instance: Union[HistoryDatasetAssociation, LibraryDatasetDatasetAssociation],
-        target_history: Optional[History] = None,
+        dataset_instance: HistoryDatasetAssociation | LibraryDatasetDatasetAssociation,
+        target_history: History | None = None,
         in_place: bool = False,
     ) -> HistoryDatasetAssociation:
         """Create a new detached dataset instance from the supplied instance.
@@ -106,6 +113,7 @@ class DatasetInstanceMaterializer:
         """
         attached = self._attached
         dataset = dataset_instance.dataset
+        assert dataset is not None
         if dataset.state != Dataset.states.DEFERRED and isinstance(dataset_instance, HistoryDatasetAssociation):
             return dataset_instance
 
@@ -117,7 +125,7 @@ class DatasetInstanceMaterializer:
 
         materialized_dataset_hashes = [h.copy() for h in dataset.hashes]
         if in_place:
-            materialized_dataset = dataset_instance.dataset
+            materialized_dataset = dataset
             materialized_dataset.state = Dataset.states.OK
         else:
             materialized_dataset = Dataset()
@@ -130,7 +138,7 @@ class DatasetInstanceMaterializer:
                     # legacy dataset being copied, new paradigm is to treat transform as
                     # what happened and requested_transform as what should happen - so lets
                     # swap these in this new dataset.
-                    source.requested_transform = source.transform
+                    source.requested_transform = source.transform  # type: ignore[assignment]
 
                 # we have not applied any transforms yet, so we can clear these
                 source.transform = None
@@ -143,9 +151,9 @@ class DatasetInstanceMaterializer:
             materialized_dataset.hashes = materialized_dataset_hashes
         target_source = self._find_closest_dataset_source(dataset)
         transient_paths = None
-        replacement_dataset: Optional[HistoryDatasetAssociation] = None
+        replacement_dataset: HistoryDatasetAssociation | None = None
 
-        exception_materializing: Optional[Exception] = None
+        exception_materializing: Exception | None = None
         history = target_history
         if history is None and isinstance(dataset_instance, HistoryDatasetAssociation):
             try:
@@ -166,7 +174,7 @@ class DatasetInstanceMaterializer:
                 sa_session.add(materialized_dataset)
                 sa_session.commit()
             object_store_populator.set_dataset_object_store_id(materialized_dataset)
-            user: Optional[User] = None
+            user: User | None = None
             if history:
                 user = history.user
             replacement_dataset = get_replacement_dataset(
@@ -252,7 +260,7 @@ class DatasetInstanceMaterializer:
         source_uri = target_source.source_uri
         if source_uri is None:
             raise Exception("Cannot stream from dataset source without specified source_uri")
-        path = stream_url_to_file(source_uri, file_sources=self._file_sources)
+        path = stream_url_to_file(source_uri, file_sources=self._file_sources, user_context=self._user_context)
         if target_source.hashes:
             for source_hash in target_source.hashes:
                 _validate_hash(path, source_hash, "downloaded file")
@@ -317,7 +325,7 @@ class DatasetInstanceMaterializer:
         return best_source
 
 
-CollectionInputT = Union[HistoryDatasetCollectionAssociation, DatasetCollectionElement]
+CollectionInputT = HistoryDatasetCollectionAssociation | DatasetCollectionElement
 
 
 def materialize_collection_input(
@@ -360,7 +368,7 @@ def _materialize_collection(
 def _materialize_collection_element(
     element: DatasetCollectionElement, materializer: DatasetInstanceMaterializer
 ) -> DatasetCollectionElement:
-    materialized_object: Union[DatasetCollection, HistoryDatasetAssociation, LibraryDatasetDatasetAssociation]
+    materialized_object: DatasetCollection | HistoryDatasetAssociation | LibraryDatasetDatasetAssociation
     if element.is_collection:
         assert element.child_collection
         materialized_object = _materialize_collection(element.child_collection, materializer)
@@ -379,12 +387,13 @@ def _materialize_collection_element(
 
 def materializer_factory(
     attached: bool,
-    object_store: Optional[ObjectStore] = None,
-    object_store_populator: Optional[ObjectStorePopulator] = None,
-    transient_path_mapper: Optional[TransientPathMapper] = None,
-    transient_directory: Optional[str] = None,
-    file_sources: Optional[ConfiguredFileSources] = None,
-    sa_session: Optional[Session] = None,
+    object_store: ObjectStore | None = None,
+    object_store_populator: ObjectStorePopulator | None = None,
+    transient_path_mapper: TransientPathMapper | None = None,
+    transient_directory: str | None = None,
+    file_sources: ConfiguredFileSources | None = None,
+    sa_session: Session | None = None,
+    user_context: OptionalUserContext = None,
 ) -> DatasetInstanceMaterializer:
     if object_store_populator is None and object_store is not None:
         object_store_populator = ObjectStorePopulator(object_store, None)
@@ -396,6 +405,7 @@ def materializer_factory(
         transient_path_mapper=transient_path_mapper,
         file_sources=file_sources,
         sa_session=sa_session,
+        user_context=user_context,
     )
 
 

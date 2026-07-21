@@ -1170,7 +1170,7 @@ def read_ssaha_data(ssahadata_fh):
             if len(ml) != 12:
                 print("\n", line, end=" ")
                 raise RuntimeError(
-                    "Expected 12 elements in the SSAHA2 line with ALIGMENT keyword, but found " + str(len(ml))
+                    "Expected 12 elements in the SSAHA2 line with ALIGNMENT keyword, but found " + str(len(ml))
                 )
             if ml[2] not in ssahapematches:
                 ssahapematches[ml[2]] = []
@@ -1319,7 +1319,7 @@ def read_config():
     parser.set_defaults(pelinker_fname=def_pelinker_fname)
 
     # we parse the cmd line
-    (options, args) = parser.parse_args()
+    options, args = parser.parse_args()
 
     # we put the result in a dict
     global config

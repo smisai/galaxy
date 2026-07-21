@@ -1,7 +1,4 @@
-from typing import (
-    Optional,
-    Union,
-)
+import logging
 from uuid import uuid4
 
 from pydantic import (
@@ -10,17 +7,24 @@ from pydantic import (
 )
 from sqlalchemy import select
 
+from galaxy.config import GalaxyAppConfiguration
+from galaxy.config.url_headers import UrlHeadersConfigFactory
 from galaxy.exceptions import (
     InsufficientPermissionsException,
     ItemAlreadyClaimedException,
     ItemMustBeClaimed,
     ObjectNotFound,
+    RequestParameterInvalidException,
     RequestParameterMissingException,
 )
 from galaxy.managers.workflows import WorkflowContentsManager
 from galaxy.model import (
     ToolLandingRequest as ToolLandingRequestModel,
     WorkflowLandingRequest as WorkflowLandingRequestModel,
+)
+from galaxy.model.dataset_collections.types.sample_sheet_util import (
+    validate_column_definitions,
+    validate_row,
 )
 from galaxy.model.scoped_session import galaxy_scoped_session
 from galaxy.schema.schema import (
@@ -32,6 +36,10 @@ from galaxy.schema.schema import (
     WorkflowLandingRequest,
 )
 from galaxy.security.idencoding import IdEncodingHelper
+from galaxy.security.vault import (
+    InvalidVaultConfigException,
+    Vault,
+)
 from galaxy.structured_app import (
     MinimalManagerApp,
     StructuredApp,
@@ -41,30 +49,46 @@ from galaxy.tool_util.parameters import (
     LandingRequestInternalToolState,
     LandingRequestToolState,
 )
-from galaxy.tool_util_models.parameters import DataOrCollectionRequestAdapter
+from galaxy.tool_util_models.parameters import (
+    DataOrCollectionRequestAdapter,
+    DataRequestCollectionUri,
+    ToolParameterBundleModel,
+)
 from galaxy.util import safe_str_cmp
 from .context import ProvidesUserContext
+from .headers_encryption import (
+    decrypt_headers_in_data,
+    encrypt_headers_in_data,
+    has_sensitive_headers,
+)
 from .tools import (
     get_tool_from_toolbox,
     ToolRunReference,
 )
 
-LandingRequestModel = Union[ToolLandingRequestModel, WorkflowLandingRequestModel]
+LandingRequestModel = ToolLandingRequestModel | WorkflowLandingRequestModel
+
+FETCH_TOOL_ID = "__DATA_FETCH__"
+
+log = logging.getLogger(__name__)
 
 
 class LandingRequestManager:
-
     def __init__(
         self,
         sa_session: galaxy_scoped_session,
         security: IdEncodingHelper,
         workflow_contents_manager: WorkflowContentsManager,
         app: MinimalManagerApp,
+        config: GalaxyAppConfiguration,
+        vault: Vault | None = None,
     ):
         self.sa_session = sa_session
         self.security = security
         self.workflow_contents_manager = workflow_contents_manager
         self.app = app
+        self.vault = vault
+        self.url_headers_config = UrlHeadersConfigFactory.from_app_config(config)
 
     def create_tool_landing_request(self, payload: CreateToolLandingRequestPayload, user_id=None) -> ToolLandingRequest:
         tool_id = payload.tool_id
@@ -76,26 +100,65 @@ class LandingRequestManager:
         landing_request_state = LandingRequestToolState(request_state or {})
         # Okay this is a hack until tool request API commit is merged, tools don't yet have a parameter
         # schema - so we can't do this properly.
-        if hasattr(tool, "parameters"):
-            internal_landing_request_state = landing_decode(landing_request_state, tool, self.security.decode_id)
+        if tool.parameters is not None:
+            parameter_bundle = ToolParameterBundleModel(parameters=tool.parameters)
+            internal_landing_request_state = landing_decode(
+                landing_request_state, parameter_bundle, self.security.decode_id
+            )
         else:
-            assert tool.id == "__DATA_FETCH__"
+            assert tool.id == FETCH_TOOL_ID, f"tool '{tool.id}' has no parameter schema but is not {FETCH_TOOL_ID}"
             # we have validated the payload as part of the API request
             # nothing else to decode ideally so just swap to internal model state object
             internal_landing_request_state = LandingRequestInternalToolState(
                 input_state=landing_request_state.input_state
             )
 
+        # Validate sample sheet metadata in request_state for __DATA_FETCH__ tool
+        if tool.id == "__DATA_FETCH__" and request_state:
+            # Check each item in request_state for sample sheet metadata
+            for item in landing_request_state.input_state.get("request_state", []):
+                # Try to parse as DataRequestCollectionUri to access sample sheet fields
+                if isinstance(item, dict) and item.get("class") == "Collection":
+                    column_definitions = item.get("column_definitions")
+                    rows = item.get("rows")
+                    collection_type = item.get("collection_type", "")
+
+                    if column_definitions is not None or rows is not None:
+                        # Validate that sample sheet metadata is only used with sample_sheet collection types
+                        if not collection_type.startswith("sample_sheet"):
+                            raise RequestParameterInvalidException(
+                                f"Sample sheet metadata (column_definitions, rows) can only be used with collection_type 'sample_sheet' or 'sample_sheet:<type>', not '{collection_type}'"
+                            )
+
+                        # Validate column definitions structure
+                        if column_definitions is not None:
+                            validate_column_definitions(column_definitions)
+
+                        # Validate rows against column definitions and element identifiers
+                        if rows:
+                            element_identifiers = [elem.get("identifier") for elem in item.get("elements", [])]
+                            for identifier, row in rows.items():
+                                if identifier not in element_identifiers:
+                                    raise RequestParameterInvalidException(
+                                        f"Row identifier '{identifier}' not found in collection elements"
+                                    )
+                                validate_row(row, column_definitions, element_identifiers)
+
         model = ToolLandingRequestModel()
         model.tool_id = tool_id
         model.tool_version = tool_version
-        model.request_state = internal_landing_request_state.input_state
         model.uuid = uuid4()
         model.client_secret = payload.client_secret
         model.public = payload.public
         model.origin = str(payload.origin) if payload.origin else None
         if user_id:
             model.user_id = user_id
+
+        request_state = self._encrypt_headers_in_request_state(
+            internal_landing_request_state.input_state, str(model.uuid)
+        )
+        model.request_state = request_state
+
         self._save(model)
         return self._tool_response(model)
 
@@ -109,29 +172,63 @@ class LandingRequestManager:
             model.workflow_source_type = "trs_url"
             # validate this ?
             model.workflow_source = payload.workflow_id
+        elif payload.workflow_target_type == "url":
+            model.workflow_source_type = "url"
+            model.workflow_source = payload.workflow_id
         model.uuid = uuid4()
         model.client_secret = payload.client_secret
-        model.request_state = self.validate_workflow_request_state(payload.request_state)
+
+        validated_request_state = self.validate_workflow_request_state(payload.request_state)
+        request_state = self._encrypt_headers_in_request_state(validated_request_state, str(model.uuid))
+        model.request_state = request_state
+
         model.public = payload.public
+        model.origin = str(payload.origin) if payload.origin else None
         self._save(model)
         return self._workflow_response(model)
 
-    def validate_workflow_request_state(self, request_state: Optional[dict]) -> Optional[dict]:
+    def validate_workflow_request_state(self, request_state: dict | None) -> dict | None:
         # This would ideally be run in the context of a workflow input definition
         if isinstance(request_state, dict):
             for key, value in request_state.items():
                 if isinstance(value, dict):
                     try:
                         # persist values after model validators and aliases have been applied
-                        request_state[key] = DataOrCollectionRequestAdapter.validate_python(value).model_dump(
-                            by_alias=True, exclude_unset=True, mode="json"
-                        )
+                        validated_value = DataOrCollectionRequestAdapter.validate_python(value)
+
+                        # Validate sample sheet metadata for collections
+                        if isinstance(validated_value, DataRequestCollectionUri):
+                            has_sample_sheet_metadata = (
+                                validated_value.column_definitions is not None or validated_value.rows is not None
+                            )
+                            if has_sample_sheet_metadata:
+                                collection_type = validated_value.collection_type
+                                if not collection_type.startswith("sample_sheet"):
+                                    raise RequestParameterInvalidException(
+                                        f"Sample sheet metadata (column_definitions, rows) can only be used with collection_type 'sample_sheet' or 'sample_sheet:<type>', not '{collection_type}'"
+                                    )
+
+                                # Validate column definitions structure
+                                if validated_value.column_definitions is not None:
+                                    validate_column_definitions(validated_value.column_definitions)
+
+                                # Validate rows against column definitions and element identifiers
+                                if validated_value.rows:
+                                    element_identifiers = [elem.identifier for elem in validated_value.elements]
+                                    for identifier, row in validated_value.rows.items():
+                                        if identifier not in element_identifiers:
+                                            raise RequestParameterInvalidException(
+                                                f"Row identifier '{identifier}' not found in collection elements"
+                                            )
+                                        validate_row(row, validated_value.column_definitions, element_identifiers)
+
+                        request_state[key] = validated_value.model_dump(by_alias=True, exclude_unset=True, mode="json")
                     except ValidationError:
                         pass
         return request_state
 
     def claim_tool_landing_request(
-        self, trans: ProvidesUserContext, uuid: UUID4, claim: Optional[ClaimLandingPayload]
+        self, trans: ProvidesUserContext, uuid: UUID4, claim: ClaimLandingPayload | None
     ) -> ToolLandingRequest:
         request = self._get_tool_landing_request(uuid)
         self._check_can_claim(trans, request, claim)
@@ -140,7 +237,7 @@ class LandingRequestManager:
         return self._tool_response(request)
 
     def claim_workflow_landing_request(
-        self, trans: ProvidesUserContext, uuid: UUID4, claim: Optional[ClaimLandingPayload]
+        self, trans: ProvidesUserContext, uuid: UUID4, claim: ClaimLandingPayload | None
     ) -> WorkflowLandingRequest:
         request = self._get_workflow_landing_request(uuid)
         self._check_can_claim(trans, request, claim)
@@ -157,6 +254,13 @@ class LandingRequestManager:
                 trans, trs_url=request.workflow_source
             )
             request.workflow_id = workflow.latest_workflow_id
+        elif request.workflow_source_type == "url" and isinstance(trans.app, StructuredApp):
+            # trans is always structured app except for unit test
+            assert request.workflow_source
+            workflow = self.workflow_contents_manager.get_or_create_workflow_from_url(
+                trans, url=request.workflow_source
+            )
+            request.workflow_id = workflow.latest_workflow_id
 
     def get_tool_landing_request(self, trans: ProvidesUserContext, uuid: UUID4) -> ToolLandingRequest:
         request = self._get_claimed_tool_landing_request(trans, uuid)
@@ -168,7 +272,7 @@ class LandingRequestManager:
         return self._workflow_response(request)
 
     def _check_can_claim(
-        self, trans: ProvidesUserContext, request: LandingRequestModel, claim: Optional[ClaimLandingPayload]
+        self, trans: ProvidesUserContext, request: LandingRequestModel, claim: ClaimLandingPayload | None
     ):
         if request.client_secret is not None:
             if claim is None or not claim.client_secret:
@@ -207,10 +311,12 @@ class LandingRequestManager:
         return request
 
     def _tool_response(self, model: ToolLandingRequestModel) -> ToolLandingRequest:
+        request_state = self._decrypt_headers_in_request_state(model.request_state, str(model.uuid))
+
         response_model = ToolLandingRequest(
             tool_id=model.tool_id,
             tool_version=model.tool_version,
-            request_state=model.request_state,
+            request_state=request_state,
             uuid=model.uuid,
             state=self._state(model),
             origin=model.origin,
@@ -219,21 +325,24 @@ class LandingRequestManager:
 
     def _workflow_response(self, model: WorkflowLandingRequestModel) -> WorkflowLandingRequest:
 
-        workflow_id: Optional[Union[int, str]] = None
+        workflow_id: int | str | None = None
         if model.stored_workflow_id is not None:
             workflow_id = model.stored_workflow_id
             target_type = "stored_workflow"
         elif model.workflow_id is not None:
             workflow_id = model.workflow_id
             target_type = "workflow"
-        elif model.workflow_source_type == "trs_url":
+        elif model.workflow_source_type in ("trs_url", "url"):
             target_type = model.workflow_source_type
             workflow_id = model.workflow_source
         assert workflow_id
+
+        request_state = self._decrypt_headers_in_request_state(model.request_state, str(model.uuid))
+
         response_model = WorkflowLandingRequest(
             workflow_id=self.security.encode_id(workflow_id) if isinstance(workflow_id, int) else workflow_id,
             workflow_target_type=target_type,
-            request_state=model.request_state,
+            request_state=request_state,
             uuid=model.uuid,
             state=self._state(model),
             origin=model.origin,
@@ -253,3 +362,31 @@ class LandingRequestManager:
         sa_session = self.sa_session
         sa_session.add(model)
         sa_session.commit()
+
+    def _encrypt_headers_in_request_state(self, request_state: dict | None, landing_uuid: str) -> dict | None:
+        if request_state is not None:
+            if has_sensitive_headers(request_state, self.url_headers_config):
+                if not self.vault:
+                    raise InvalidVaultConfigException(
+                        "Sensitive headers detected in landing request but no vault is configured. "
+                        "Configure a vault to securely store sensitive header information."
+                    )
+                return encrypt_headers_in_data(
+                    request_state,
+                    landing_uuid,
+                    self.vault,
+                    key_prefix="landing_request/headers",
+                    url_headers_config=self.url_headers_config,
+                )
+        return request_state
+
+    def _decrypt_headers_in_request_state(self, request_state: dict | None, landing_uuid: str):
+        if request_state is not None and self.vault:
+            return decrypt_headers_in_data(
+                request_state,
+                landing_uuid,
+                self.vault,
+                key_prefix="landing_request/headers",
+                url_headers_config=self.url_headers_config,
+            )
+        return request_state

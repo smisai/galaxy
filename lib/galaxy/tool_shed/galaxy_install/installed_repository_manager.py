@@ -9,7 +9,6 @@ import shutil
 from typing import (
     Any,
     no_type_check,
-    Optional,
 )
 
 from galaxy import util
@@ -113,7 +112,7 @@ class InstalledRepositoryManager:
                 tpm=tpm,
                 repository=repository,
                 changeset_revision=repository.changeset_revision,
-                metadata_dict=repository.metadata_,  # type:ignore[arg-type]
+                metadata_dict=repository.metadata_,  # type: ignore[arg-type]
             )
             repository_tools_tups = irmm.get_repository_tools_tups()
             # Reload tools into the appropriate tool panel section.
@@ -135,7 +134,7 @@ class InstalledRepositoryManager:
                 dmh = data_manager.DataManagerHandler(self.app)
                 dmh.install_data_managers(
                     self.app.config.shed_data_manager_config_file,
-                    repository.metadata_,  # type:ignore[arg-type]
+                    repository.metadata_,  # type: ignore[arg-type]
                     repository.get_shed_config_dict(self.app),
                     data_manager_relative_install_dir,
                     repository,
@@ -611,7 +610,7 @@ class InstalledRepositoryManager:
             str(repository.installed_changeset_revision),
         )
 
-    def get_repository_install_dir(self, tool_shed_repository: ToolShedRepository) -> Optional[str]:
+    def get_repository_install_dir(self, tool_shed_repository: ToolShedRepository) -> str | None:
         for tool_path in self.tool_paths:
             ts = common_util.remove_port_from_tool_shed_url(str(tool_shed_repository.tool_shed))
             relative_path = os.path.join(

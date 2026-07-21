@@ -10,6 +10,7 @@ const DEFAULT_WIDTH = 300;
 interface Props {
     collapsible?: boolean;
     side?: "left" | "right";
+    panelId?: string;
     minWidth?: number;
     maxWidth?: number;
     reactiveWidth?: number;
@@ -17,6 +18,7 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
     collapsible: true,
     side: "right",
+    panelId: undefined,
     minWidth: 200,
     maxWidth: 800,
     reactiveWidth: undefined,
@@ -24,6 +26,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
     (e: "update:reactive-width", width: number): void;
+    (e: "close"): void;
 }>();
 
 const localPanelWidth = ref(DEFAULT_WIDTH);
@@ -89,7 +92,7 @@ defineExpose({
 <template>
     <div
         v-if="show"
-        :id="side"
+        :id="panelId ?? side"
         ref="root"
         class="flex-panel"
         :class="{ ...sideClasses }"
@@ -100,14 +103,18 @@ defineExpose({
             :min="props.minWidth"
             :max="props.maxWidth"
             @positionChanged="(v) => (panelWidth = v)"
-            @visibilityChanged="(v) => (isHoveringDragHandle = v)"></DraggableSeparator>
+            @visibilityChanged="(v) => (isHoveringDragHandle = v)"
+            @dragging="(v) => (isDragging = v)" />
 
         <button
             v-if="props.collapsible"
             class="collapse-button open"
             :class="{ ...sideClasses, show: showToggle }"
             title="Close panel"
-            @click="show = false"
+            @click="
+                show = false;
+                emit('close');
+            "
             @mouseenter="hoverToggle = true"
             @focusin="hoverToggle = true"
             @mouseout="hoverToggle = false"
@@ -120,18 +127,27 @@ defineExpose({
 
         <div v-if="isDragging" class="interaction-overlay" />
     </div>
-    <div v-else>
-        <button
-            class="collapse-button closed"
-            :class="{ ...sideClasses, show: true }"
-            title="Open panel"
-            @click="
-                show = true;
-                hoverToggle = false;
+    <div v-else class="flex-panel-closed" :class="{ ...sideClasses }">
+        <slot
+            name="closed-button"
+            :open="
+                () => {
+                    show = true;
+                    hoverToggle = false;
+                }
             ">
-            <FontAwesomeIcon v-if="side === 'right'" fixed-width :icon="faChevronLeft" />
-            <FontAwesomeIcon v-else :icon="faChevronRight" fixed-width />
-        </button>
+            <button
+                class="collapse-button closed"
+                :class="{ ...sideClasses, show: true }"
+                title="Open panel"
+                @click="
+                    show = true;
+                    hoverToggle = false;
+                ">
+                <FontAwesomeIcon v-if="side === 'right'" fixed-width :icon="faChevronLeft" />
+                <FontAwesomeIcon v-else :icon="faChevronRight" fixed-width />
+            </button>
+        </slot>
     </div>
 </template>
 
@@ -243,6 +259,10 @@ $border-width: 6px;
             left: 0;
         }
     }
+}
+
+.flex-panel-closed {
+    position: relative;
 }
 
 .interaction-overlay {

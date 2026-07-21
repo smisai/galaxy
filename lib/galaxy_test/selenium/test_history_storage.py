@@ -1,6 +1,5 @@
 from .framework import (
     managed_history,
-    selenium_only,
     selenium_test,
     SeleniumTestCase,
 )
@@ -30,7 +29,6 @@ UPLOAD_DATA_3 = {
 class TestHistoryStorage(SeleniumTestCase):
     ensure_registered = True
 
-    @selenium_only("Not yet migrated to support Playwright backend")
     @selenium_test
     @managed_history
     def test_history_storage_accessibility(self):
@@ -57,7 +55,6 @@ class TestHistoryStorage(SeleniumTestCase):
         self.screenshot("storage_dashboard_manage_explore_usage_landing")
         self.assert_baseline_accessibility()
 
-    @selenium_only("Not yet migrated to support Playwright backend")
     @selenium_test
     @managed_history
     def test_delete_dataset_from_storage_view(self):
@@ -79,7 +76,7 @@ class TestHistoryStorage(SeleniumTestCase):
         # Delete the dataset
         self.components.history_storage.dataset_by_size_delete.wait_for_and_click()
         self.screenshot("history_storage_confirm_delete")
-        self.components.history_storage.confirm_delete.wait_for_and_click()
+        self.components.confirm_dialog.ok_button.wait_for_and_click()
 
         # Verify dataset is removed from storage view
         self.components.history_storage.dataset_by_size(name="big").wait_for_absent()

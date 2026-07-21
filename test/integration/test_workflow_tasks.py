@@ -183,8 +183,7 @@ input_data:
             self.dataset_collection_populator.create_list_in_history(history_id=history_id, wait=True).json()
             new_history = self.dataset_populator.copy_history(history_id=history_id).json()
             copied_collection = self.dataset_populator.get_history_collection_details(new_history["id"])
-            workflow_id = self.workflow_populator.upload_yaml_workflow(
-                """class: GalaxyWorkflow
+            workflow_id = self.workflow_populator.upload_yaml_workflow("""class: GalaxyWorkflow
 inputs:
   input:
     type: collection
@@ -198,8 +197,7 @@ steps:
 outputs:
   extracted_dataset:
     outputSource: extract_dataset/output
-"""
-            )
+""")
             inputs = {"input": {"src": "hdca", "id": copied_collection["id"]}}
             workflow_request = {"history": f"hist_id={new_history['id']}", "inputs_by": "name", "inputs": inputs}
             invocation = self.workflow_populator.invoke_workflow_raw(
@@ -263,7 +261,7 @@ outputs:
         assert len(response) == 1
         invocation = response[0]
         assert "state" in invocation
-        assert invocation["state"] == "scheduled"
+        assert invocation["state"] in ("scheduled", "completed")
         imported_invocation_id = invocation["id"]
 
         invocation_details = self.workflow_populator.get_invocation(imported_invocation_id, step_details="true")
@@ -384,26 +382,23 @@ steps:
             # Test 2: Export with include_hidden=True, include_deleted=False
             # Expected: 3 datasets (input_1 + output_1[hidden] + output_3)
             dataset_files = self._export_and_get_datasets(invocation_id, include_hidden=True, include_deleted=False)
-            assert len(dataset_files) == 3, (
-                f"Test 2 (hidden=True, deleted=False): Expected 3 datasets, found {len(dataset_files)}: "
-                f"{dataset_files}"
-            )
+            assert (
+                len(dataset_files) == 3
+            ), f"Test 2 (hidden=True, deleted=False): Expected 3 datasets, found {len(dataset_files)}: {dataset_files}"
 
             # Test 3: Export with include_hidden=False, include_deleted=True
             # Expected: 3 datasets (input_1 + output_2[deleted] + output_3)
             dataset_files = self._export_and_get_datasets(invocation_id, include_hidden=False, include_deleted=True)
-            assert len(dataset_files) == 3, (
-                f"Test 3 (hidden=False, deleted=True): Expected 3 datasets, found {len(dataset_files)}: "
-                f"{dataset_files}"
-            )
+            assert (
+                len(dataset_files) == 3
+            ), f"Test 3 (hidden=False, deleted=True): Expected 3 datasets, found {len(dataset_files)}: {dataset_files}"
 
             # Test 4: Export with include_hidden=True, include_deleted=True
             # Expected: 4 datasets (input_1 + output_1[hidden] + output_2[deleted] + output_3)
             dataset_files = self._export_and_get_datasets(invocation_id, include_hidden=True, include_deleted=True)
-            assert len(dataset_files) == 4, (
-                f"Test 4 (hidden=True, deleted=True): Expected 4 datasets, found {len(dataset_files)}: "
-                f"{dataset_files}"
-            )
+            assert (
+                len(dataset_files) == 4
+            ), f"Test 4 (hidden=True, deleted=True): Expected 4 datasets, found {len(dataset_files)}: {dataset_files}"
 
     def _export_and_get_datasets(self, invocation_id: str, include_hidden: bool, include_deleted: bool) -> list[str]:
         """Helper method to export an invocation and return the list of dataset files in the archive."""

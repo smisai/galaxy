@@ -35,18 +35,19 @@ logging.getLogger("boto").setLevel(logging.INFO)  # Otherwise boto is quite nois
 
 
 def download_directory(bucket, remote_folder, local_path):
-    # List objects in the specified S3 folder
     objects = bucket.list(prefix=remote_folder)
-
     for obj in objects:
         remote_file_path = obj.key
         local_file_path = os.path.join(local_path, os.path.relpath(remote_file_path, remote_folder))
-
-        # Create directories if they don't exist
         os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
-
-        # Download the file
-        obj.get_contents_to_filename(local_file_path)
+        tmp_file_path = local_file_path + ".tmp"
+        try:
+            obj.get_contents_to_filename(tmp_file_path)
+            os.rename(tmp_file_path, local_file_path)
+        except Exception:
+            if os.path.exists(tmp_file_path):
+                os.remove(tmp_file_path)
+            raise
 
 
 def parse_config_xml(config_xml):
@@ -104,6 +105,9 @@ def parse_config_xml(config_xml):
             "cache": cache_dict,
             "extra_dirs": extra_dirs,
             "private": CachingConcreteObjectStore.parse_private_from_config_xml(config_xml),
+            "enable_direct_download": CachingConcreteObjectStore.parse_enable_direct_download_from_config_xml(
+                config_xml
+            ),
         }
         name = config_xml.attrib.get("name", None)
         if name is not None:
@@ -320,7 +324,8 @@ class S3ObjectStore(CachingConcreteObjectStore, CloudConfigMixin, UsesAxel):
             else:
                 log.debug("Pulled key '%s' into cache to %s", rel_path, local_destination)
                 self.transfer_progress = 0  # Reset transfer progress counter
-                key.get_contents_to_filename(local_destination, cb=self._transfer_cb, num_cb=10)
+                with self._atomic_download(local_destination) as tmp:
+                    key.get_contents_to_filename(tmp, cb=self._transfer_cb, num_cb=10)
                 return True
         except S3ResponseError:
             log.exception("Problem downloading key '%s' from S3 bucket '%s'", rel_path, self._bucket.name)
@@ -406,12 +411,17 @@ class S3ObjectStore(CachingConcreteObjectStore, CloudConfigMixin, UsesAxel):
     def _download_directory_into_cache(self, rel_path, cache_path):
         download_directory(self._bucket, rel_path, cache_path)
 
-    def _get_object_url(self, obj, **kwargs):
+    def _get_object_url(self, obj, content_disposition=None, content_type=None, **kwargs):
         if self._exists(obj, **kwargs):
             rel_path = self._construct_path(obj, **kwargs)
             try:
                 key = Key(self._bucket, rel_path)
-                return key.generate_url(expires_in=86400)  # 24hrs
+                response_headers = {}
+                if content_disposition is not None:
+                    response_headers["response-content-disposition"] = content_disposition
+                if content_type is not None:
+                    response_headers["response-content-type"] = content_type
+                return key.generate_url(expires_in=86400, response_headers=response_headers or None)  # 24hrs
             except S3ResponseError:
                 log.exception("Trouble generating URL for dataset '%s'", rel_path)
         return None

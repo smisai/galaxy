@@ -3,7 +3,6 @@ API operations on Group objects.
 """
 
 import logging
-from typing import Optional
 
 from galaxy.managers.context import ProvidesAppContext
 from galaxy.managers.group_roles import GroupRolesManager
@@ -28,7 +27,7 @@ log = logging.getLogger(__name__)
 router = Router(tags=["group_roles"])
 
 
-def group_role_to_model(trans, group_id: int, role, displayed_name: Optional[str] = None) -> GroupRoleResponse:
+def group_role_to_model(trans, group_id: int, role, displayed_name: str | None = None) -> GroupRoleResponse:
     encoded_group_id = Security.security.encode_id(group_id)
     encoded_role_id = Security.security.encode_id(role.id)
     url = trans.url_builder("group_role", group_id=encoded_group_id, role_id=encoded_role_id)
@@ -52,7 +51,8 @@ class FastAPIGroupRoles:
         trans: ProvidesAppContext = DependsOnTrans,
     ) -> GroupRoleListResponse:
         group_roles = self.manager.index(trans, group_id)
-        private_role_emails = get_private_role_user_emails_dict(trans.sa_session)
+        role_ids = {gr.role.id for gr in group_roles}
+        private_role_emails = get_private_role_user_emails_dict(trans.sa_session, role_ids=role_ids)
         data = []
         for group in group_roles:
             role = group.role

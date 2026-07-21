@@ -1,6 +1,5 @@
 from typing import (
     Any,
-    Optional,
 )
 
 from galaxy.job_metrics import (
@@ -47,7 +46,7 @@ def test_job_metrics_format_cgroup():
         "memory.limit_in_bytes",
         9223372036854771712,
         assert_title="Memory limit on cgroup (MEM)",
-        assert_value="8.0 EB",
+        assert_value="8.0 EiB",
     )
     _assert_format(
         "cgroup",
@@ -61,7 +60,7 @@ def test_job_metrics_format_cgroup():
         "memory.peak",
         45097156608,
         assert_title="Max memory usage recorded",
-        assert_value="42.0 GB",
+        assert_value="42.0 GiB",
     )
 
 
@@ -119,9 +118,7 @@ def _assert_metrics_of_type(metric_list, expected_types):
         assert dictifiable_metric.plugin == expected_type
 
 
-def _assert_format(
-    plugin: str, key: str, value: Any, assert_title: Optional[str] = None, assert_value: Optional[str] = None
-):
+def _assert_format(plugin: str, key: str, value: Any, assert_title: str | None = None, assert_value: str | None = None):
     result = TEST_JOBS_METRICS.format(plugin, key, value)
     if assert_title is not None:
         assert result[0] == assert_title

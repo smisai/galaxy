@@ -24,6 +24,9 @@ export type BootstrapVariant =
     | "outline-link"
     | "outline-dark";
 
+/** Bootstrap component sizes */
+export type BootstrapSize = "xs" | "sm" | "md" | "lg" | "xl";
+
 /**
  * Represents a breadcrumb item in the BreadcrumbHeading component.
  * Each item can have a title, an optional URL to navigate to, and optional additional text
@@ -40,6 +43,13 @@ export interface BreadcrumbItem {
      * the item will not be clickable if this is not provided or the current route matches this location.
      */
     to?: RawLocation;
+
+    /**
+     * Optional numeric index representing this item's position in navigation history.
+     * Used for index-based navigation without router integration.
+     * Negative values (e.g., -1) can represent root or special positions.
+     */
+    index?: number;
 
     /**
      * Optional additional text displayed above the item.

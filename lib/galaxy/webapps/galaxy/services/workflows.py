@@ -1,8 +1,7 @@
 import logging
+import re
 from typing import (
     Any,
-    Optional,
-    Union,
 )
 
 from pydantic import UUID4
@@ -11,40 +10,87 @@ from galaxy import (
     exceptions,
     web,
 )
-from galaxy.managers.context import ProvidesUserContext
+from galaxy.managers.context import (
+    ProvidesHistoryContext,
+    ProvidesUserContext,
+)
+from galaxy.managers.jobs import JobManager
 from galaxy.managers.workflows import (
+    RefactorRequest,
     RefactorResponse,
     WorkflowContentsManager,
     WorkflowSerializer,
     WorkflowsManager,
 )
 from galaxy.model import (
+    ImplicitCollectionJobs,
     LandingRequestToWorkflowInvocationAssociation,
     StoredWorkflow,
     WorkflowInvocation,
     WorkflowLandingRequest,
 )
+from galaxy.schema.fields import DecodedDatabaseIdField
 from galaxy.schema.invocation import WorkflowInvocationResponse
 from galaxy.schema.schema import (
     InvocationsStateCounts,
-    WorkflowIndexQueryPayload,
+    WorkflowIndexPayload,
 )
 from galaxy.schema.workflows import (
     InvokeWorkflowPayload,
     StoredWorkflowDetailed,
+    WorkflowExtractionByIdsPayload,
+    WorkflowExtractionPayload,
+    WorkflowExtractionResult,
 )
 from galaxy.util.tool_shed.tool_shed_registry import Registry
 from galaxy.webapps.galaxy.services.base import ServiceBase
 from galaxy.webapps.galaxy.services.notifications import NotificationService
 from galaxy.webapps.galaxy.services.sharable import ShareableService
+from galaxy.workflow.extract import (
+    collect_output_label_targets,
+    extract_workflow,
+    extract_workflow_by_ids,
+    normalize_output_label_key,
+)
 from galaxy.workflow.run import queue_invoke
 from galaxy.workflow.run_request import build_workflow_run_configs
 
 log = logging.getLogger(__name__)
 
 
-class WorkflowIndexPayload(WorkflowIndexQueryPayload):
-    missing_tools: bool = False
+def _to_extraction_result(stored_workflow: StoredWorkflow) -> WorkflowExtractionResult:
+    return WorkflowExtractionResult.model_validate({"id": stored_workflow.id})
+
+
+def _sanitize_output_label(label: str) -> str:
+    label = re.sub(r"\s+", " ", label.strip())
+    if not label:
+        raise exceptions.RequestParameterInvalidException("output_labels contains an empty label")
+    return label[:255]
+
+
+def _validate_input_names(
+    dataset_names: list[str] | None,
+    dataset_collection_names: list[str] | None,
+) -> None:
+    """Validate user-supplied workflow input names (step labels).
+
+    Dataset and collection input names share one namespace (the single
+    ``step_labels`` set in ``extract_steps``), so uniqueness is checked across
+    the combined list. Only inspects names that were actually supplied — the
+    no-names default path (the ``"Input Dataset"`` constants) is untouched.
+    Names are kept raw: limits are enforced by rejection, never truncation.
+    """
+    provided = (dataset_names or []) + (dataset_collection_names or [])
+    seen: set[str] = set()
+    for name in provided:
+        if not name.strip():
+            raise exceptions.RequestParameterInvalidException("workflow input names must not be empty")
+        if len(name) > 255:
+            raise exceptions.RequestParameterInvalidException(f"workflow input name exceeds 255 characters: {name!r}")
+        if name in seen:
+            raise exceptions.RequestParameterInvalidException(f"workflow input names must be unique: {name!r}")
+        seen.add(name)
 
 
 class WorkflowsService(ServiceBase):
@@ -55,19 +101,21 @@ class WorkflowsService(ServiceBase):
         serializer: WorkflowSerializer,
         tool_shed_registry: Registry,
         notification_service: NotificationService,
+        job_manager: JobManager,
     ):
         self._workflows_manager = workflows_manager
         self._workflow_contents_manager = workflow_contents_manager
         self._serializer = serializer
         self.shareable_service = ShareableService(workflows_manager, serializer, notification_service)
         self._tool_shed_registry = tool_shed_registry
+        self._job_manager = job_manager
 
     def index(
         self,
         trans: ProvidesUserContext,
         payload: WorkflowIndexPayload,
         include_total_count: bool = False,
-    ) -> tuple[list[dict[str, Any]], Optional[int]]:
+    ) -> tuple[list[dict[str, Any]], int | None]:
         user = trans.user
         missing_tools = payload.missing_tools
         query, total_matches = self._workflows_manager.index_query(trans, payload, include_total_count)
@@ -128,7 +176,7 @@ class WorkflowsService(ServiceBase):
         trans,
         workflow_id,
         payload: InvokeWorkflowPayload,
-    ) -> Union[WorkflowInvocationResponse, list[WorkflowInvocationResponse]]:
+    ) -> WorkflowInvocationResponse | list[WorkflowInvocationResponse]:
         if trans.anonymous:
             raise exceptions.AuthenticationRequired("You need to be logged in to run workflows.")
         trans.check_user_activation()
@@ -193,6 +241,135 @@ class WorkflowsService(ServiceBase):
         else:
             return encoded_invocations[0]
 
+    def extract_from_history(
+        self,
+        trans: ProvidesHistoryContext,
+        history,
+        payload: WorkflowExtractionPayload,
+    ) -> WorkflowExtractionResult:
+        if trans.user is None:
+            raise exceptions.AuthenticationRequired("Workflow extraction requires an authenticated user.")
+        _validate_input_names(payload.dataset_names, payload.dataset_collection_names)
+        stored_workflow = extract_workflow(
+            trans,
+            user=trans.user,
+            history=history,
+            job_ids=payload.job_ids,
+            dataset_ids=payload.dataset_hids,
+            dataset_collection_ids=payload.dataset_collection_hids,
+            workflow_name=payload.workflow_name,
+            dataset_names=payload.dataset_names,
+            dataset_collection_names=payload.dataset_collection_names,
+        )
+        return _to_extraction_result(stored_workflow)
+
+    def extract_by_ids(
+        self,
+        trans: ProvidesHistoryContext,
+        payload: WorkflowExtractionByIdsPayload,
+    ) -> WorkflowExtractionResult:
+        if trans.user is None:
+            raise exceptions.AuthenticationRequired("Workflow extraction requires an authenticated user.")
+        self._validate_extract_by_ids_payload(trans, payload)
+        stored_workflow = extract_workflow_by_ids(
+            trans,
+            user=trans.user,
+            workflow_name=payload.workflow_name,
+            job_manager=self._job_manager,
+            job_ids=payload.job_ids,
+            implicit_collection_jobs_ids=payload.implicit_collection_jobs_ids,
+            hda_ids=payload.hda_ids,
+            hdca_ids=payload.hdca_ids,
+            dataset_names=payload.dataset_names,
+            dataset_collection_names=payload.dataset_collection_names,
+            output_labels=payload.output_labels,
+        )
+        return _to_extraction_result(stored_workflow)
+
+    def _validate_extract_by_ids_payload(
+        self,
+        trans: ProvidesHistoryContext,
+        payload: WorkflowExtractionByIdsPayload,
+    ) -> None:
+        """Cross-payload checks that need DB access. Pydantic handles per-field
+        shape; this enforces semantic rules across job_ids /
+        implicit_collection_jobs_ids that depend on the loaded Job / ICJ rows
+        so extract_workflow_by_ids can trust its input.
+        """
+        for field in ("job_ids", "implicit_collection_jobs_ids", "hda_ids", "hdca_ids"):
+            ids = getattr(payload, field)
+            if len(set(ids)) != len(ids):
+                raise exceptions.RequestParameterInvalidException(f"{field} contains duplicates")
+
+        for job_id in payload.job_ids:
+            job = self._job_manager.get_accessible_job(trans, job_id)
+            icj_assoc = job.implicit_collection_jobs_association
+            if icj_assoc is not None:
+                raise exceptions.RequestParameterInvalidException(
+                    f"job_ids[{job_id}] is part of implicit collection jobs "
+                    f"{icj_assoc.implicit_collection_jobs_id} - pass via "
+                    "implicit_collection_jobs_ids instead."
+                )
+
+        sa_session = trans.sa_session
+        dataset_collection_manager = trans.app.dataset_collection_manager
+        for icj_id in payload.implicit_collection_jobs_ids:
+            icj = sa_session.get(ImplicitCollectionJobs, icj_id)
+            if icj is None:
+                raise exceptions.ObjectNotFound(f"ImplicitCollectionJobs {icj_id} not found")
+            if icj.populated_state != ImplicitCollectionJobs.populated_states.OK:
+                raise exceptions.RequestParameterInvalidException(
+                    f"ImplicitCollectionJobs {icj_id} is in populated_state "
+                    f"{icj.populated_state!r}; only 'ok' is extractable"
+                )
+            output_hdcas = icj.output_dataset_collection_instances
+            if not output_hdcas:
+                raise exceptions.RequestParameterInvalidException(
+                    f"ImplicitCollectionJobs {icj_id} has no output collections to extract"
+                )
+            for hdca in output_hdcas:
+                dataset_collection_manager.get_dataset_collection_instance(trans, "history", hdca.id)
+
+        _validate_input_names(payload.dataset_names, payload.dataset_collection_names)
+
+        output_targets = collect_output_label_targets(
+            trans,
+            job_manager=self._job_manager,
+            job_ids=payload.job_ids,
+            implicit_collection_jobs_ids=payload.implicit_collection_jobs_ids,
+        )
+        seen_output_ids = set()
+        seen_resolved_outputs = set()
+        seen_labels = set()
+        for output_label in payload.output_labels:
+            sanitized_label = _sanitize_output_label(output_label.label)
+            output_label.label = sanitized_label
+            output_key = normalize_output_label_key(trans, output_label.kind, output_label.id)
+            output_label.id = output_key[1]
+            if output_key in seen_output_ids:
+                raise exceptions.RequestParameterInvalidException(
+                    f"output_labels contains duplicate {output_label.kind} id {output_label.id}"
+                )
+            seen_output_ids.add(output_key)
+
+            output_target = output_targets.get(output_key)
+            if output_target is None:
+                raise exceptions.RequestParameterInvalidException(
+                    f"output_labels includes {output_label.kind} id {output_label.id} "
+                    "that is not produced by a selected extraction step"
+                )
+            if output_target.step_key in seen_resolved_outputs:
+                raise exceptions.RequestParameterInvalidException(
+                    f"output_labels contains multiple labels for output {output_target.output_name!r}"
+                )
+            seen_resolved_outputs.add(output_target.step_key)
+
+            if sanitized_label in seen_labels:
+                raise exceptions.RequestParameterInvalidException(
+                    f"output_labels contains duplicate workflow output label {sanitized_label!r}"
+                )
+            seen_labels.add(sanitized_label)
+
     def delete(self, trans, workflow_id):
         workflow_to_delete = self._workflows_manager.get_stored_workflow(trans, workflow_id)
         self._workflows_manager.check_security(trans, workflow_to_delete)
@@ -228,9 +405,9 @@ class WorkflowsService(ServiceBase):
 
     def refactor(
         self,
-        trans,
-        workflow_id,
-        payload,
+        trans: ProvidesUserContext,
+        workflow_id: DecodedDatabaseIdField,
+        payload: RefactorRequest,
         instance: bool,
     ) -> RefactorResponse:
         stored_workflow = self._workflows_manager.get_stored_workflow(trans, workflow_id, by_stored_id=not instance)
@@ -274,7 +451,7 @@ class WorkflowsService(ServiceBase):
         return None
 
     def _create_landing_request_association(
-        self, trans: ProvidesUserContext, landing_uuid: Optional[UUID4], invocations: list[WorkflowInvocation]
+        self, trans: ProvidesUserContext, landing_uuid: UUID4 | None, invocations: list[WorkflowInvocation]
     ):
         """Create association between landing request and workflow invocations."""
         # Look up the workflow landing request by UUID

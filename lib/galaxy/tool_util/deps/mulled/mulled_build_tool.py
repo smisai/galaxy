@@ -8,8 +8,8 @@ Build mulled images for requirements defined in a tool:
     mulled-build-tool build path/to/tool_file.xml
 
 """
+
 from typing import (
-    List,
     TYPE_CHECKING,
 )
 
@@ -47,7 +47,7 @@ def main(argv=None) -> None:
     _mulled_build_tool(args.tool, args)
 
 
-def requirements_to_mulled_targets(requirements) -> List["CondaTarget"]:
+def requirements_to_mulled_targets(requirements) -> list["CondaTarget"]:
     """Convert Galaxy's representation of requirements into a list of CondaTarget objects.
 
     Only package requirements are retained.

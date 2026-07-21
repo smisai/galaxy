@@ -1,6 +1,6 @@
 # Supported Python versions
 
-Galaxy's core functionality is currently supported on Python **>=3.9** .
+Galaxy's core functionality is currently supported on Python **>=3.10** .
 
 If Galaxy complains about the version of Python you are using:
 
@@ -26,7 +26,7 @@ If Galaxy complains about the version of Python you are using:
      ```sh
      % rm -rf /path/to/galaxy/database/compiled_templates/
      ```
-   These templated will be regenerated automatically when starting Galaxy.
+   These templates will be regenerated automatically when starting Galaxy.
 
 5. Start Galaxy again.
 

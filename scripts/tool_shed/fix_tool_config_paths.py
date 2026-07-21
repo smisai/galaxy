@@ -31,6 +31,7 @@ sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm.attributes import flag_modified
 
 from galaxy.util.script import (
     app_properties_from_args,
@@ -92,8 +93,7 @@ def construct_new_path(old_path, repository, current_file_path):
     expected_repo_path = repository.hg_repository_path(current_file_path)
 
     # Extract the portion after "repo_{id}/" to get the relative tool path
-    repo_pattern = f"repo_{repository.id}/"
-    if repo_pattern in old_path:
+    if (repo_pattern := f"repo_{repository.id}/") in old_path:
         # Split on the repo pattern and take everything after it
         relative_tool_path = old_path.split(repo_pattern, 1)[1]
         new_path = os.path.join(expected_repo_path, relative_tool_path)
@@ -102,9 +102,8 @@ def construct_new_path(old_path, repository, current_file_path):
     # Fallback: try to extract using regex pattern for hash_dirs/repo_id/file
     # Pattern matches: .../000/repo_123/tool.xml or .../000/123/456/repo_789/tool.xml
     pattern = r".*/(\d+/)*(repo_\d+/.*)"
-    match = re.search(pattern, old_path)
 
-    if match:
+    if match := re.search(pattern, old_path):
         # Extract everything from "repo_" onward
         repo_relative = match.group(2)  # e.g., "repo_123/filtering.xml"
 
@@ -276,10 +275,10 @@ def process_repository_metadata(session, current_file_path, dry_run, backup_dir,
                 else:
                     stats.paths_with_missing_files += 1
 
-        # Save changes if modified (SQLAlchemy change detection for MutableJSONType)
+        # Save changes if modified (SQLAlchemy change detection for JSON columns)
         if modified and not dry_run:
-            # Reassign the metadata dict to trigger SQLAlchemy's change detection
-            repo_metadata.metadata = repo_metadata.metadata.copy()
+            # Force SQLAlchemy to detect the change by flagging the attribute as modified
+            flag_modified(repo_metadata, "metadata")
 
         # Always backup original metadata if there were tools
         if tools:

@@ -21,9 +21,11 @@ OBJECT_STORE_RUCIO_ACCOUNT = os.environ.get("GALAXY_INTEGRATION_OBJECT_STORE_RUC
 OBJECT_STORE_RUCIO_USERNAME = os.environ.get("GALAXY_INTEGRATION_OBJECT_STORE_RUCIO_USERNAME", "rucio")
 OBJECT_STORE_RUCIO_RSE_NAME = "TEST"
 OBJECT_STORE_RUCIO_ACCESS = os.environ.get("GALAXY_INTEGRATION_OBJECT_STORE_RUCIO_ACCESS", "rucio")
+OBJECT_STORE_RUCIO_IMAGE = os.environ.get(
+    "GALAXY_INTEGRATION_OBJECT_STORE_RUCIO_IMAGE", "savannah.ornl.gov/ndip/public-docker/rucio:40.2.0"
+)
 
-OBJECT_STORE_CONFIG = string.Template(
-    """
+OBJECT_STORE_CONFIG = string.Template("""
 <object_store type="hierarchical" id="primary">
     <backends>
         <object_store id="swifty" type="generic_s3" weight="1" order="0">
@@ -36,10 +38,8 @@ OBJECT_STORE_CONFIG = string.Template(
         </object_store>
     </backends>
 </object_store>
-"""
-)
-RUCIO_OBJECT_STORE_CONFIG = string.Template(
-    """
+""")
+RUCIO_OBJECT_STORE_CONFIG = string.Template("""
     type: rucio
     upload_rse_name: ${rucio_rse}
     upload_scheme: file
@@ -59,10 +59,8 @@ RUCIO_OBJECT_STORE_CONFIG = string.Template(
       path: ${temp_directory}/object_store_cache
       size: 1000
       cache_updated_data: ${cache_updated_data}
-"""
-)
-AZURE_OBJECT_STORE_CONFIG = string.Template(
-    """
+""")
+AZURE_OBJECT_STORE_CONFIG = string.Template("""
 type: distributed
 backends:
 - type: azure_blob
@@ -99,14 +97,12 @@ backends:
     path: "${temp_directory}/database/job_working_directory_azure_2"
   - type: temp
     path: "${temp_directory}/database/tmp_azure_2"
-"""
-)
+""")
 
 # Onedata setup for the test is done according to this documentation:
 # https://onedata.org/#/home/documentation/topic/stable/demo-mode
 ONEDATA_DEMO_SPACE_NAME = "demo-space"
-ONEDATA_OBJECT_STORE_CONFIG = string.Template(
-    """
+ONEDATA_OBJECT_STORE_CONFIG = string.Template("""
 <object_store type="onedata">
     <auth access_token="${access_token}" />
     <connection onezone_domain="${onezone_domain}" disable_tls_certificate_validation="True"/>
@@ -115,8 +111,7 @@ ONEDATA_OBJECT_STORE_CONFIG = string.Template(
     <extra_dir type="job_work" path="${temp_directory}/job_working_directory_onedata"/>
     <extra_dir type="temp" path="${temp_directory}/tmp_onedata"/>
 </object_store>
-"""
-)
+""")
 
 
 def wait_rucio_ready(container_name):
@@ -137,7 +132,7 @@ def wait_rucio_ready(container_name):
 
 def start_rucio(container_name):
     ports = [(OBJECT_STORE_PORT, 80)]
-    docker_run("savannah.ornl.gov/ndip/public-docker/rucio:1.29.8", container_name, ports=ports)
+    docker_run(OBJECT_STORE_RUCIO_IMAGE, container_name, ports=ports)
 
     wait_rucio_ready(container_name)
 
@@ -181,7 +176,7 @@ class BaseSwiftObjectStoreIntegrationTestCase(BaseObjectStoreIntegrationTestCase
         super().handle_galaxy_config_kwds(config)
         temp_directory = cls._test_driver.mkdtemp()
         cls.object_stores_parent = temp_directory
-        cls.object_store_cache_path = f"{temp_directory}/object_store_cache"
+        cls.object_store_cache_path = os.path.join(temp_directory, "object_store_cache")
         config_path = os.path.join(temp_directory, "object_store_conf.xml")
         config["object_store_store_by"] = "uuid"
         config["metadata_strategy"] = "extended"
@@ -224,7 +219,7 @@ class BaseAzureObjectStoreIntegrationTestCase(
         cls._disable_workflow_scheduling(config)
         temp_directory = cls._test_driver.mkdtemp()
         cls.object_stores_parent = temp_directory
-        cls.object_store_cache_path = f"{temp_directory}/object_store_cache"
+        cls.object_store_cache_path = os.path.join(temp_directory, "object_store_cache")
         config_path = os.path.join(temp_directory, "object_store_conf.yml")
         config["object_store_store_by"] = "uuid"
         config["metadata_strategy"] = "extended"
@@ -272,7 +267,7 @@ class BaseRucioObjectStoreIntegrationTestCase(BaseObjectStoreIntegrationTestCase
         super().handle_galaxy_config_kwds(config)
         temp_directory = cls._test_driver.mkdtemp()
         cls.object_stores_parent = temp_directory
-        cls.object_store_cache_path = f"{temp_directory}/object_store_cache"
+        cls.object_store_cache_path = os.path.join(temp_directory, "object_store_cache")
         config_path = os.path.join(temp_directory, "object_store_conf.yml")
         config["object_store_store_by"] = "uuid"
         config["metadata_strategy"] = "extended"
@@ -333,7 +328,7 @@ class BaseOnedataObjectStoreIntegrationTestCase(BaseObjectStoreIntegrationTestCa
         super().handle_galaxy_config_kwds(config)
         temp_directory = cls._test_driver.mkdtemp()
         cls.object_stores_parent = temp_directory
-        cls.object_store_cache_path = f"{temp_directory}/object_store_cache"
+        cls.object_store_cache_path = os.path.join(temp_directory, "object_store_cache")
         config_path = os.path.join(temp_directory, "object_store_conf.xml")
         config["object_store_store_by"] = "uuid"
         config["metadata_strategy"] = "extended"

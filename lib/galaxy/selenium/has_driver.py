@@ -12,8 +12,6 @@ from typing import (
     cast,
     Generic,
     Literal,
-    Optional,
-    Union,
 )
 
 from axe_selenium_python import Axe
@@ -49,7 +47,7 @@ from .web_element_protocol import WebElementProtocol
 
 UNSPECIFIED_TIMEOUT = object()
 
-HasFindElement = Union[WebDriver, WebElement]
+HasFindElement = WebDriver | WebElement
 DEFAULT_AXE_SCRIPT_URL = "https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.7.1/axe.min.js"
 AXE_SCRIPT_HASH: dict[str, str] = {}
 AXE_SCRIPT_HASH_LOCK = threading.Lock()
@@ -173,6 +171,10 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
         """
         self.driver.get(url)
 
+    def refresh(self) -> None:
+        """Reload the current page."""
+        self.driver.refresh()
+
     def re_get_with_query_params(self, params_str: str):
         driver = self.driver
         new_url = driver.current_url
@@ -245,7 +247,7 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
     def element_absent(self, selector_template: Target) -> bool:
         return len(self.find_elements(selector_template)) == 0
 
-    def switch_to_frame(self, frame_reference: Union[str, int, WebElement] = "frame"):
+    def switch_to_frame(self, frame_reference: str | int | WebElement = "frame"):
         """
         Switch to an iframe or frame.
 
@@ -325,7 +327,7 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
         element = self.driver.find_element(*selector_template.element_locator)
         element.click()
 
-    def _wait_on_selenium_condition(self, condition, on_str: Optional[str] = None, **kwds):
+    def _wait_on_selenium_condition(self, condition, on_str: str | None = None, **kwds):
         if on_str is None:
             on_str = str(condition)
         wait = self.wait(**kwds)
@@ -366,13 +368,13 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
         """
         self.action_chains().move_to_element(element).perform()
 
-    def send_enter(self, element: Optional[WebElement] = None):
+    def send_enter(self, element: WebElement | None = None):
         self._send_key(Keys.ENTER, element)
 
-    def send_escape(self, element: Optional[WebElement] = None):
+    def send_escape(self, element: WebElement | None = None):
         self._send_key(Keys.ESCAPE, element)
 
-    def send_backspace(self, element: Optional[WebElement] = None):
+    def send_backspace(self, element: WebElement | None = None):
         self._send_key(Keys.BACKSPACE, element)
 
     def aggressive_clear(self, element: WebElement) -> None:
@@ -381,7 +383,7 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
         for _ in range(25):
             element.send_keys(Keys.BACKSPACE)
 
-    def _send_key(self, key: str, element: Optional[WebElement] = None):
+    def _send_key(self, key: str, element: WebElement | None = None):
         if element is None:
             self.action_chains().send_keys(key)
         else:
@@ -393,7 +395,7 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
         """Get timeout handler for application specific wait types."""
         ...
 
-    def wait(self, timeout=UNSPECIFIED_TIMEOUT, wait_type: Optional[WaitTypeT] = None, **kwds):
+    def wait(self, timeout=UNSPECIFIED_TIMEOUT, wait_type: WaitTypeT | None = None, **kwds):
         if timeout is UNSPECIFIED_TIMEOUT:
             timeout = self.timeout_handler(wait_type)
         return WebDriverWait(self.driver, timeout)
@@ -474,7 +476,7 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
         """
         return self.driver.execute_script(script, *args)
 
-    def set_local_storage(self, key: str, value: Union[str, float]) -> None:
+    def set_local_storage(self, key: str, value: str | float) -> None:
         """
         Set a value in the browser's localStorage.
 
@@ -525,21 +527,19 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
         """
         self.execute_script("arguments[0].click();", element)
 
-    def find_element_by_link_text(self, text: str, element: Optional[WebElement] = None) -> WebElementProtocol:
+    def find_element_by_link_text(self, text: str, element: WebElement | None = None) -> WebElementProtocol:
         return _webelement_to_protocol(self._locator_aware(element).find_element(By.LINK_TEXT, text))
 
-    def find_element_by_xpath(self, xpath: str, element: Optional[WebElement] = None) -> WebElementProtocol:
+    def find_element_by_xpath(self, xpath: str, element: WebElement | None = None) -> WebElementProtocol:
         return _webelement_to_protocol(self._locator_aware(element).find_element(By.XPATH, xpath))
 
-    def find_element_by_id(self, id: str, element: Optional[WebElement] = None) -> WebElementProtocol:
+    def find_element_by_id(self, id: str, element: WebElement | None = None) -> WebElementProtocol:
         return _webelement_to_protocol(self._locator_aware(element).find_element(By.ID, id))
 
-    def find_element_by_selector(self, selector: str, element: Optional[WebElement] = None) -> WebElementProtocol:
+    def find_element_by_selector(self, selector: str, element: WebElement | None = None) -> WebElementProtocol:
         return _webelement_to_protocol(self._locator_aware(element).find_element(By.CSS_SELECTOR, selector))
 
-    def find_elements_by_selector(
-        self, selector: str, element: Optional[WebElement] = None
-    ) -> list[WebElementProtocol]:
+    def find_elements_by_selector(self, selector: str, element: WebElement | None = None) -> list[WebElementProtocol]:
         """
         Find multiple elements by CSS selector.
 
@@ -577,11 +577,17 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
             selector_template: Either a Target or a (locator_type, value) tuple for the select element
             value: The value attribute of the option to select
         """
+        # Wait for element to be present before trying to find it
+        if isinstance(selector_template, Target):
+            locator = selector_template.element_locator
+        else:
+            locator = selector_template
+        self._wait_on_condition_visible(locator, f"select element {locator} to become visible")
         select_element = _protocol_to_webelement(self.find_element(selector_template))
         select = Select(select_element)
         select.select_by_value(value)
 
-    def axe_eval(self, context: Optional[str] = None, write_to: Optional[str] = None) -> AxeResults:
+    def axe_eval(self, context: str | None = None, write_to: str | None = None) -> AxeResults:
         if self.axe_skip:
             return NullAxeResults()
 
@@ -624,7 +630,7 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
         """
         self.driver.quit()
 
-    def _locator_aware(self, element: Optional[WebElement] = None) -> HasFindElement:
+    def _locator_aware(self, element: WebElement | None = None) -> HasFindElement:
         if element is None:
             return self.driver
         else:
@@ -639,6 +645,17 @@ class HasDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTypeT]):
         """
         action_chains = self.action_chains()
         action_chains.move_to_element(element).double_click().perform()
+
+    def fire_mousedown(self, element: WebElement) -> None:
+        """Dispatch a mousedown event on an element via JS.
+
+        Fires exactly one mousedown event. Useful for elements that
+        listen for mousedown rather than click.
+        """
+        self.execute_script(
+            "arguments[0].dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));",
+            element,
+        )
 
     def assert_absent_or_hidden_after_transitions(self, selector_template: Target, **kwds) -> None:
         """
@@ -666,7 +683,8 @@ def exception_indicates_not_clickable(exception):
 
 
 def exception_indicates_stale_element(exception):
-    return "stale" in str(exception)
+    exception_str = str(exception)
+    return "stale" in exception_str or "not attached to the DOM" in exception_str
 
 
 __all__ = (

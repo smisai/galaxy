@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import (
     cast,
-    Optional,
+    Literal,
     Protocol,
     TYPE_CHECKING,
     Union,
@@ -15,7 +15,6 @@ from pydantic import (
     BaseModel,
     Field,
 )
-from typing_extensions import Literal
 
 from galaxy.exceptions import RequestParameterInvalidException
 from galaxy.model.dataset_collections.rule_target_columns import (
@@ -47,7 +46,7 @@ from galaxy.model.dataset_collections.workbook_util import (
     ReadOnlyWorkbook,
     set_column_width,
 )
-from galaxy.schema.schema import SampleSheetColumnValueT
+from galaxy.tool_util_models.sample_sheet import SampleSheetColumnValueT
 from galaxy.util import (
     string_as_bool,
     string_as_bool_or_none,
@@ -102,7 +101,7 @@ WorkbookContentField: Base64StringT = Field(
     title="Workbook Content (Base 64 encoded)",
     description="The workbook content (the contents of the xlsx file) that have been base64 encoded.",
 )
-PrefixRowsField: Optional[PrefixRowValuesT] = Field(
+PrefixRowsField: PrefixRowValuesT | None = Field(
     None,
     title="Prefix sample sheet values",
     description="An area to pre-populate URIs, etc...",
@@ -115,7 +114,7 @@ SampleSheetCollectionType = Literal[
 ParsedRow = dict[str, SampleSheetColumnValueT]
 ParsedRows = list[ParsedRow]
 
-AnyLogMessage = Union[InferredColumnMapping, ContentTypeMessage, CsvDialectInferenceMessage]
+AnyLogMessage = InferredColumnMapping | ContentTypeMessage | CsvDialectInferenceMessage
 
 SampleSheetParseLog = list[AnyLogMessage]
 
@@ -134,7 +133,7 @@ class CreateWorkbookRequest(BaseModel):
     collection_type: SampleSheetCollectionType
     prefix_columns_type: Literal["URI"] = "URI"
     column_definitions: list[SampleSheetColumnDefinitionModel] = ColumnDefinitionsField
-    prefix_values: Optional[PrefixRowValuesT] = None
+    prefix_values: PrefixRowValuesT | None = None
 
 
 @dataclass
@@ -149,7 +148,7 @@ class CreateWorkbook(BaseModel):
     collection_type: SampleSheetCollectionType
     prefix_columns_type: Literal["URI", "ModelObjects"] = "URI"
     column_definitions: list[SampleSheetColumnDefinitionModel] = ColumnDefinitionsField
-    prefix_values: Optional[InternalPrefixRowValuesT] = None
+    prefix_values: InternalPrefixRowValuesT | None = None
 
 
 @dataclass
@@ -173,7 +172,7 @@ class ParseWorkbookForCollection:
     content: str = WorkbookContentField
 
 
-AnyParseWorkbook = Union[ParseWorkbook, ParseWorkbookForCollection]
+AnyParseWorkbook = ParseWorkbook | ParseWorkbookForCollection
 
 
 INSTRUCTIONS = [
@@ -359,7 +358,7 @@ def generate_workbook(payload: CreateWorkbook) -> Workbook:
     freeze_header_row(worksheet)
 
     for index, column_definition in enumerate(column_definitions):
-        validation: Optional[DataValidation] = None
+        validation: DataValidation | None = None
         if column_definition.type == "int":
             validation = DataValidation(type="whole", allow_blank=True)
             # TODO: operator="between", formula1="1", formula2="1000"
@@ -469,7 +468,7 @@ class FetchPrefixColumn:
         return HasHelp(title=self.title, help=self.title)
 
 
-def prefix_columns(payload: Union[CreateWorkbook, AnyParseWorkbook]) -> list[FetchPrefixColumn]:
+def prefix_columns(payload: CreateWorkbook | AnyParseWorkbook) -> list[FetchPrefixColumn]:
     if isinstance(payload, (CreateWorkbook, ParseWorkbook)):
         collection_type = payload.collection_type
         columns_type = payload.prefix_columns_type
@@ -516,7 +515,7 @@ def prefix_columns(payload: Union[CreateWorkbook, AnyParseWorkbook]) -> list[Fet
     return columns
 
 
-def prefix_column_names(payload: Union[CreateWorkbook, AnyParseWorkbook]) -> list[str]:
+def prefix_column_names(payload: CreateWorkbook | AnyParseWorkbook) -> list[str]:
     return [c.title for c in prefix_columns(payload)]
 
 
@@ -585,26 +584,56 @@ def _load_row_data(
     return rows
 
 
-def _list_to_sample_sheet_collection_type(input_collection_type: str) -> SampleSheetCollectionType:
-    """Convert simple list collection types to corresponding sample_sheet collection types.
+SAMPLE_SHEET_COLLECTION_TYPES: set[SampleSheetCollectionType] = {
+    "sample_sheet",
+    "sample_sheet:paired",
+    "sample_sheet:paired_or_unpaired",
+    "sample_sheet:record",
+}
 
-    What would the sample_sheet collection type that allows decorating that kind of list. For instance,
-    list:paired becomes sample_sheet:paired.
+
+def _list_to_sample_sheet_collection_type(input_collection_type: str) -> SampleSheetCollectionType:
+    """Convert list collection types to corresponding sample_sheet collection types.
+
+    Converts list types to sample_sheet types (e.g., list:paired -> sample_sheet:paired).
+    Passes through existing sample_sheet types unchanged.
     """
-    sample_sheet_collection_type: Optional[SampleSheetCollectionType] = None
+    # Pass through existing sample_sheet types unchanged
+    if input_collection_type in SAMPLE_SHEET_COLLECTION_TYPES:
+        return input_collection_type
+
+    # Convert list types to sample_sheet types
     if input_collection_type == "list":
-        sample_sheet_collection_type = "sample_sheet"
+        return "sample_sheet"
     elif input_collection_type == "list:paired":
-        sample_sheet_collection_type = "sample_sheet:paired"
+        return "sample_sheet:paired"
     elif input_collection_type == "list:paired_or_unpaired":
-        sample_sheet_collection_type = "sample_sheet:paired_or_unpaired"
+        return "sample_sheet:paired_or_unpaired"
     elif input_collection_type == "list:record":
-        raise NotImplementedError("Work in progress, this has not bee implemented yet")
+        raise NotImplementedError("Work in progress, this has not been implemented yet")
     else:
         raise RequestParameterInvalidException(
             f"Invalid collection type for sample sheet workbook generation {input_collection_type}"
         )
-    return sample_sheet_collection_type
+
+
+def _sample_sheet_to_list_collection_type(input_collection_type: str) -> str:
+    """Convert sample_sheet collection types to corresponding list collection types.
+
+    Converts sample_sheet types to list types (e.g., sample_sheet:paired -> list:paired).
+    """
+    if input_collection_type == "sample_sheet":
+        return "list"
+    elif input_collection_type == "sample_sheet:paired":
+        return "list:paired"
+    elif input_collection_type == "sample_sheet:paired_or_unpaired":
+        return "list:paired_or_unpaired"
+    elif input_collection_type == "sample_sheet:record":
+        return "list:record"
+    else:
+        raise RequestParameterInvalidException(
+            f"Invalid collection type for sample sheet conversion: {input_collection_type}"
+        )
 
 
 def _prefix_column_to_column_target(column_header: FetchPrefixColumn) -> ColumnTarget:

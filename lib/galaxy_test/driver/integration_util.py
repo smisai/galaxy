@@ -22,8 +22,10 @@ from unittest import (
     skip,
     SkipTest,
 )
+from urllib.parse import urljoin
 
 import pytest
+import requests
 
 from galaxy.app import UniverseApplication
 from galaxy.tool_util.verify.test_data import TestDataResolver
@@ -37,6 +39,7 @@ from galaxy_test.base.api import (
     UsesApiTestCaseMixin,
     UsesCeleryTasks,
 )
+from galaxy_test.base.testcase import host_port_and_url
 from .driver_util import GalaxyTestDriver
 
 if TYPE_CHECKING:
@@ -50,7 +53,7 @@ SCRIPT_DIRECTORY = os.path.abspath(os.path.dirname(__file__))
 VAULT_CONF = os.path.join(SCRIPT_DIRECTORY, "vault_conf.yml")
 
 
-def docker_run(image, name, *args, detach=True, remove=True, ports=None, env_vars: Optional[dict[str, str]] = None):
+def docker_run(image, name, *args, detach=True, remove=True, ports=None, env_vars: dict[str, str] | None = None):
     cmd = ["docker", "run"]
 
     if ports:
@@ -203,11 +206,7 @@ class IntegrationInstance(UsesApiTestCaseMixin, UsesCeleryTasks):
 
     def _configure_interactor(self):
         # Setup attributes needed for API testing...
-        server_wrapper = self._test_driver.server_wrappers[0]
-        host = server_wrapper.host
-        port = server_wrapper.port
-        prefix = server_wrapper.prefix or ""
-        self.url = f"http://{host}:{port}{prefix.rstrip('/')}/"
+        self.host, self.port, self.url = host_port_and_url(self._test_driver)
         self._setup_interactor()
 
     def restart(self, handle_reconfig=None):
@@ -240,6 +239,16 @@ class IntegrationInstance(UsesApiTestCaseMixin, UsesCeleryTasks):
     def _skip_unless_postgres(self):
         if not self._app.config.database_connection.startswith("post"):
             raise SkipTest("Test only valid for postgres")
+
+    def _decode_id(self, encoded_id: str) -> int:
+        """Decode an encoded API id to its raw int via the live app's security helper."""
+        return self._app.security.decode_id(encoded_id)
+
+    def _user_id_for_api_key(self, api_key: str) -> int:
+        """Return the raw integer ``User.id`` for the user owning ``api_key``."""
+        response = requests.get(urljoin(self.url, "api/users/current"), params={"key": api_key})
+        response.raise_for_status()
+        return self._decode_id(response.json()["id"])
 
     def _run_tool_test(self, *args, **kwargs):
         return self._test_driver.run_tool_test(*args, **kwargs)
@@ -301,7 +310,7 @@ class ConfiguresObjectStores:
         cls,
         template: string.Template,
         config: dict[str, Any],
-        template_params: Optional[dict[str, Any]] = None,
+        template_params: dict[str, Any] | None = None,
         format: ObjectStoreConfigFormat = "xml",
     ):
         temp_directory = cls._test_driver.mkdtemp()
@@ -383,3 +392,15 @@ class ConfiguresWorkflowScheduling:
 </workflow_schedulers>
 """
         cls._configure_workflow_schedulers(noop_schedulers_conf, config)
+
+
+class ConfigureAllowedUrlHeaders:
+    _test_driver: GalaxyTestDriver
+
+    @classmethod
+    def _configure_allowed_url_headers(cls, allowed_url_headers_conf: str, config):
+        temp_directory = cls._test_driver.mkdtemp()
+        url_headers_conf_path = os.path.join(temp_directory, "url_headers_conf.yml")
+        with open(url_headers_conf_path, "w") as f:
+            f.write(allowed_url_headers_conf)
+        config["url_headers_config_file"] = url_headers_conf_path

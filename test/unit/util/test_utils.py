@@ -4,7 +4,6 @@ import tempfile
 from enum import Enum
 from io import StringIO
 from pathlib import Path
-from typing import Dict
 
 import pytest
 
@@ -79,13 +78,11 @@ def test_parse_xml_enoent():
 
 
 def test_clean_multiline_string():
-    x = util.clean_multiline_string(
-        """
+    x = util.clean_multiline_string("""
         a
         b
         c
-"""
-    )
+""")
     assert x == "a\nb\nc\n"
 
 
@@ -94,7 +91,7 @@ def test_iter_start_of_lines():
 
 
 def test_safe_loads():
-    d: Dict[str, str] = {}
+    d: dict[str, str] = {}
     rval = safe_loads(d)
     assert rval == d
     assert rval is not d
@@ -179,3 +176,46 @@ def test_validate_doi_fail_too_long():
     doi = f"doi:10.1000/{long_suffix}"
     assert util.validate_doi(doi)
     assert not util.validate_doi(doi + "a")  # Increase length by 1 past max limit
+
+
+@pytest.mark.parametrize(
+    "input_name,expected_output",
+    [
+        # Existing documented behavior
+        ("My Cool Object", "My-Cool-Object"),
+        ("!My Cool Object!", "My-Cool-Object"),
+        ("Hello\u20a9\u25ce\u0491\u029f\u217e", "Hello"),
+        # Additional edge cases
+        ("simple", "simple"),
+        ("UPPERCASE", "UPPERCASE"),  # Note: lowercase applied separately
+        ("with-dash", "with-dash"),
+        ("with spaces", "with-spaces"),
+        ("  multiple   spaces  ", "-multiple-spaces"),
+        ("trailing!", "trailing"),
+        ("!leading", "leading"),
+        ("special@#$chars", "specialchars"),
+        ("parentheses(test)", "parenthesestest"),
+        ("Rincewind (Ankh-Morpork)", "Rincewind-Ankh-Morpork"),
+    ],
+)
+def test_ready_name_for_url(input_name, expected_output):
+    """Test that ready_name_for_url correctly sanitizes names for URL use."""
+    assert util.ready_name_for_url(input_name) == expected_output
+
+
+@pytest.mark.parametrize(
+    "target,expected_substring",
+    [
+        ("normal.txt", 'filename="normal.txt"'),
+        ("file.gz ", 'filename="file.gz"'),
+        (" file.gz", 'filename="file.gz"'),
+        (" file.gz ", 'filename="file.gz"'),
+        ("Galaxy102-[name].fastqsanger.gz ", 'filename="Galaxy102-[name].fastqsanger.gz"'),
+    ],
+)
+def test_to_content_disposition(target, expected_substring):
+    result = util.to_content_disposition(target)
+    assert result.startswith("attachment; ")
+    assert expected_substring in result
+    # Ensure no trailing whitespace in the header value
+    assert result == result.strip()

@@ -15,7 +15,10 @@ import shutil
 import sys
 import time
 import traceback
-from collections.abc import Iterable
+from collections.abc import (
+    Callable,
+    Iterable,
+)
 from dataclasses import (
     dataclass,
     field,
@@ -23,12 +26,10 @@ from dataclasses import (
 from json import loads
 from typing import (
     Any,
-    Callable,
     cast,
     Optional,
     TYPE_CHECKING,
     TypedDict,
-    Union,
 )
 
 import yaml
@@ -79,6 +80,8 @@ from galaxy.metadata import get_metadata_compute_strategy
 from galaxy.model import (
     Dataset,
     Job,
+    JobOutputNameTooLongError,
+    LibraryDatasetDatasetAssociation,
     store,
     Task,
 )
@@ -118,7 +121,7 @@ from galaxy.work.context import WorkRequestContext
 
 if TYPE_CHECKING:
     from galaxy.jobs.handler import BaseJobHandlerQueue
-    from galaxy.model import DatasetInstance
+    from galaxy.model import HistoryDatasetAssociation
     from galaxy.tools import Tool
     from galaxy.util import (
         Element,
@@ -136,10 +139,10 @@ VALID_TOOL_CLASSES = ["local", "requires_galaxy", "user_defined"]
 
 
 class ResubmitConfigDict(TypedDict, total=False):
-    environment: Union[str, None]
-    condition: Union[str, None]
-    handler: Union[str, None]
-    delay: Union[str, None]
+    environment: str | None
+    condition: str | None
+    handler: str | None
+    delay: str | None
 
 
 class JobToolConfiguration(Bunch):
@@ -206,7 +209,7 @@ def job_config_xml_to_dict(config, root: "Element") -> dict[str, Any]:
 
         environment: dict[str, Any] = {"id": destination_id}
 
-        metrics_to_dict: dict[str, Union[str, Element]] = {"src": "default"}
+        metrics_to_dict: dict[str, str | Element] = {"src": "default"}
         if destination_metrics:
             if not util.asbool(destination_metrics):
                 metrics_to_dict = {"src": "disabled"}
@@ -291,7 +294,7 @@ def job_config_xml_to_dict(config, root: "Element") -> dict[str, Any]:
                 value = limit.get(key)
                 if value:
                     if key == "type" and value.startswith("destination_"):
-                        value = f"environment_{value[len('destination_'):]}"
+                        value = f"environment_{value[len('destination_') :]}"
                     limit_dict[key] = value
             limits_config.append(limit_dict)
 
@@ -301,12 +304,12 @@ def job_config_xml_to_dict(config, root: "Element") -> dict[str, Any]:
 
 @dataclass
 class JobConfigurationLimits:
-    registered_user_concurrent_jobs: Optional[int] = None
-    anonymous_user_concurrent_jobs: Optional[int] = None
-    walltime: Optional[str] = None
-    walltime_delta: Optional[datetime.timedelta] = None
+    registered_user_concurrent_jobs: int | None = None
+    anonymous_user_concurrent_jobs: int | None = None
+    walltime: str | None = None
+    walltime_delta: datetime.timedelta | None = None
     total_walltime: dict[str, Any] = field(default_factory=dict)
-    output_size: Optional[int] = None
+    output_size: int | None = None
     destination_user_concurrent_jobs: dict[str, int] = field(default_factory=dict)
     destination_total_concurrent_jobs: dict[str, int] = field(default_factory=dict)
 
@@ -336,16 +339,16 @@ class JobConfiguration(ConfiguresHandlers):
         """Parse the job configuration XML."""
         super().__init__(app)
         self.runner_plugins: list[dict] = []
-        self.dynamic_params: Optional[dict[str, Any]] = None
+        self.dynamic_params: dict[str, Any] | None = None
         self.handler_runner_plugins: dict[str, str] = {}
-        self.default_handler_id: Union[str, None] = None
-        self.handler_ready_window_size: Union[int, None] = None
+        self.default_handler_id: str | None = None
+        self.handler_ready_window_size: int | None = None
         self.destinations: dict[str, list[JobDestination]] = {}
-        self.default_destination_id: Union[str, None] = None
+        self.default_destination_id: str | None = None
         self.tools: dict[str, list[JobToolConfiguration]] = {}
         self.tool_classes: dict[str, list[JobToolConfiguration]] = {}
         self.resource_groups: dict[str, list[str]] = {}
-        self.default_resource_group: Union[str, None] = None
+        self.default_resource_group: str | None = None
         self.resource_parameters: dict[str, Any] = {}
         self.limits = JobConfigurationLimits()
 
@@ -566,7 +569,7 @@ class JobConfiguration(ConfiguresHandlers):
         for limit_dict in job_config_dict.get("limits", []):
             limit_type = limit_dict.get("type")
             if limit_type.startswith("environment_"):
-                limit_type = f"destination_{limit_type[len('environment_'):]}"
+                limit_type = f"destination_{limit_type[len('environment_') :]}"
 
             limit_value = limit_dict.get("value")
             # concurrent_jobs renamed to destination_user_concurrent_jobs in job_conf.xml
@@ -763,9 +766,7 @@ class JobConfiguration(ConfiguresHandlers):
         )
 
     # Called upon instantiation of a Tool object
-    def get_job_tool_configurations(
-        self, ids: Union[str, list[str]], tool_classes: list[str]
-    ) -> list[JobToolConfiguration]:
+    def get_job_tool_configurations(self, ids: str | list[str], tool_classes: list[str]) -> list[JobToolConfiguration]:
         """
         Get all configured JobToolConfigurations for a tool ID, or, if given
         a list of IDs, the JobToolConfigurations for the first id in ``ids``
@@ -809,7 +810,7 @@ class JobConfiguration(ConfiguresHandlers):
             rval.append(self.default_job_tool_configuration)
         return rval
 
-    def get_destination(self, id_or_tag: Union[str, None]) -> JobDestination:
+    def get_destination(self, id_or_tag: str | None) -> JobDestination:
         """Given a destination ID or tag, return the JobDestination matching the provided ID or tag
 
         :param id_or_tag: A destination ID or tag.
@@ -1010,7 +1011,7 @@ class MinimalJobWrapper(HasResourceParameters):
         self.extra_filenames: list[str] = []
         self.environment_variables: list[dict[str, str]] = []
         self.interactivetools: list[dict[str, Any]] = []
-        self.command_line: Union[str, None] = None
+        self.command_line: str | None = None
         self.version_command_line = None
         self._dependency_shell_commands = None
         # Tool versioning variables
@@ -1023,7 +1024,7 @@ class MinimalJobWrapper(HasResourceParameters):
             self._setup_working_directory(job=job)
         # the path rewriter needs destination params, so it cannot be set up until after the destination has been
         # resolved
-        self._job_io = None
+        self._job_io: JobIO | None = None
         self.tool_provided_job_metadata = None
         self.params = None  # unused
         self.runner_command_line = None
@@ -1074,13 +1075,20 @@ class MinimalJobWrapper(HasResourceParameters):
             tool_dir = os.path.abspath(tool_dir)
         return tool_dir
 
+    def _refresh_oidc_tokens_for_job(self, trans: WorkRequestContext) -> None:
+        authnz_manager = getattr(self.app, "authnz_manager", None)
+        if authnz_manager and trans.user:
+            authnz_manager.refresh_expiring_oidc_tokens(trans, trans.user)
+
     @property
-    def job_io(self):
+    def job_io(self) -> JobIO:
         if self._job_io is None:
             job = self.get_job()
             work_request = WorkRequestContext(self.app, user=job.user, galaxy_session=job.galaxy_session)
             user_context = ProvidesFileSourcesUserContext(work_request)
-            tool_source = self.tool and self.tool.tool_source.to_string()
+            self._refresh_oidc_tokens_for_job(work_request)
+            tool_source = self.tool.tool_source.to_string() if self.tool else None
+            tool_dir = self.tool.tool_dir if self.tool else None
             self._job_io = JobIO(
                 sa_session=self.sa_session,
                 job=job,
@@ -1104,7 +1112,7 @@ class MinimalJobWrapper(HasResourceParameters):
                 check_job_script_integrity_sleep=self.app.config.check_job_script_integrity_sleep,
                 tool_source=tool_source,
                 tool_source_class=type(self.tool.tool_source).__name__ if self.tool else None,
-                tool_dir=self.tool and self.tool.tool_dir,
+                tool_dir=tool_dir,
                 is_task=self.is_task,
             )
         return self._job_io
@@ -1495,9 +1503,9 @@ class MinimalJobWrapper(HasResourceParameters):
                 except Exception:
                     # Failure to update the output of a failed job should not prevent completion of the failure method
                     log.exception(
-                        "(%s) fail(): Failed to update job output dataset with id: %s",
+                        "(%s) fail(): Failed to update job output dataset instance with id: %s",
                         self.get_id_tag(),
-                        dataset.dataset.id,
+                        dataset.id,
                     )
                 # Pause any dependent jobs (and those jobs' outputs)
                 for dep_job_assoc in dataset.dependent_jobs:
@@ -1699,7 +1707,7 @@ class MinimalJobWrapper(HasResourceParameters):
                 )
                 conditions.append(destination_job_count < destination_user_limit)
 
-        elif anonymous_user_concurrent_jobs and job.galaxy_session and job.galaxy_session.id:
+        elif anonymous_user_concurrent_jobs is not None and job.galaxy_session and job.galaxy_session.id:
             anon_job_count = (
                 select(func.count(Job.id))
                 .where(
@@ -1791,6 +1799,8 @@ class MinimalJobWrapper(HasResourceParameters):
         # Now that we have the object store id, check if we are over the limit
         self._pause_job_if_over_quota(job)
         self.sa_session.commit()
+        if job.state == model.Job.states.PAUSED:
+            return False
         return True
 
     def _pause_job_if_over_quota(self, job):
@@ -1803,9 +1813,9 @@ class MinimalJobWrapper(HasResourceParameters):
     def set_job_destination(
         self,
         job_destination: JobDestination,
-        external_id: Union[str, None] = None,
+        external_id: str | None = None,
         flush: bool = True,
-        job: Union[Job, None] = None,
+        job: Job | None = None,
     ) -> None:
         """Subclasses should implement this to persist a destination, if necessary."""
 
@@ -1845,13 +1855,13 @@ class MinimalJobWrapper(HasResourceParameters):
     def _set_object_store_ids_full(self, job: Job):
         user = job.user
         object_store_id = self.get_destination_configuration("object_store_id", None)
-        split_object_stores: Optional[Callable[[str], ObjectStorePopulator]] = None
-        object_store_id_overrides: Optional[dict[str, Optional[str]]] = None
+        split_object_stores: Callable[[str], ObjectStorePopulator] | None = None
+        object_store_id_overrides: dict[str, str | None] | None = None
 
         if object_store_id is None:
             object_store_id = job.preferred_object_store_id
-        if object_store_id is None and job.workflow_invocation_step:
-            workflow_invocation_step = job.workflow_invocation_step
+        workflow_invocation_step = job.effective_workflow_invocation_step
+        if object_store_id is None and workflow_invocation_step:
             invocation_object_stores = workflow_invocation_step.preferred_object_stores
             if invocation_object_stores.is_split_configuration:
                 # Redo for subworkflows...
@@ -1924,9 +1934,16 @@ class MinimalJobWrapper(HasResourceParameters):
             self._setup_working_directory(job=job)
 
     def _finish_dataset(
-        self, output_name, dataset: "DatasetInstance", job: Job, context, final_job_state, remote_metadata_directory
+        self,
+        output_name: str,
+        dataset: "HistoryDatasetAssociation | LibraryDatasetDatasetAssociation",
+        job: Job,
+        context,
+        final_job_state,
+        remote_metadata_directory,
     ):
         implicit_collection_jobs = job.implicit_collection_jobs_association
+        assert dataset.dataset is not None
         purged = dataset.dataset.purged
         if not purged and dataset.dataset.external_filename is None:
             trynum = 0
@@ -2138,10 +2155,10 @@ class MinimalJobWrapper(HasResourceParameters):
             except store.FileTracebackException as e:
                 job.traceback = e.traceback
                 log.exception(f"Problem generating command line for Job {job.id}.\n{job.traceback}")
-                raise
-            except Exception:
+                return fail(str(e), exception=e)
+            except Exception as e:
                 log.exception(f"problem importing job outputs. stdout [{job.stdout}] stderr [{job.stderr}]")
-                raise
+                return fail(str(e), exception=e)
         else:
             if self.tool.version_string_cmd:
                 version_filename = self.get_version_string_path()
@@ -2154,7 +2171,8 @@ class MinimalJobWrapper(HasResourceParameters):
             # importing metadata will discover outputs if extended metadata
             try:
                 self.discover_outputs(job, inp_data, out_data, out_collections, final_job_state=final_job_state)
-            except MaxDiscoveredFilesExceededError as e:
+            except (MaxDiscoveredFilesExceededError, JobOutputNameTooLongError) as e:
+                log.warning("Job %s failed during output discovery: %s", job.id, e)
                 final_job_state = job.states.ERROR
                 job.job_messages = [
                     {
@@ -2228,24 +2246,27 @@ class MinimalJobWrapper(HasResourceParameters):
                 dataset.full_delete()
                 collected_bytes = 0
 
-        # Calculate dataset hash
-        for dataset_assoc in output_dataset_associations:
-            dataset = dataset_assoc.dataset.dataset
-            if not dataset.purged and dataset.state == Dataset.states.OK and not dataset.hashes:
-                if self.app.config.calculate_dataset_hash == "always" or (
-                    self.app.config.calculate_dataset_hash == "upload" and job.tool_id in ("upload1", "__DATA_FETCH__")
-                ):
-                    # Calculate dataset hash via a celery task
-                    if self.app.config.enable_celery_tasks:
-                        from galaxy.celery.tasks import compute_dataset_hash
+        # Calculate dataset hash - only if the job completed successfully,
+        # otherwise dataset files may be missing/invalid (e.g. failed fetch from 404 URL).
+        if final_job_state == job.states.OK:
+            for dataset_assoc in output_dataset_associations:
+                dataset = dataset_assoc.dataset.dataset
+                if not dataset.purged and dataset.state == Dataset.states.OK and not dataset.hashes:
+                    if self.app.config.calculate_dataset_hash == "always" or (
+                        self.app.config.calculate_dataset_hash == "upload"
+                        and job.tool_id in ("upload1", "__DATA_FETCH__")
+                    ):
+                        # Calculate dataset hash via a celery task
+                        if self.app.config.enable_celery_tasks:
+                            from galaxy.celery.tasks import compute_dataset_hash
 
-                        extra_files_path = dataset.extra_files_path if dataset.extra_files_path_exists() else None
-                        request = ComputeDatasetHashTaskRequest(
-                            dataset_id=dataset.id,
-                            extra_files_path=extra_files_path,
-                            hash_function=self.app.config.hash_function,
-                        )
-                        compute_dataset_hash.delay(request=request)
+                            extra_files_path = dataset.extra_files_path if dataset.extra_files_path_exists() else None
+                            request = ComputeDatasetHashTaskRequest(
+                                dataset_id=dataset.id,
+                                extra_files_path=extra_files_path,
+                                hash_function=self.app.config.hash_function,
+                            )
+                            compute_dataset_hash.delay(request=request)
 
         user = job.user
         if user and collected_bytes > 0 and quota_source_info is not None and quota_source_info.use:
@@ -2430,18 +2451,34 @@ class MinimalJobWrapper(HasResourceParameters):
                         str(runtime).split(".")[0], self.app.job_config.limits.walltime
                     ),
                 )
+        if runtime is not None and self.tool:
+            timelimit = self.tool.timelimit
+            if timelimit and timelimit > 0:
+                timelimit_delta = datetime.timedelta(seconds=timelimit)
+                if runtime > timelimit_delta:
+                    log.warning(
+                        "(%s) Job runtime %s has exceeded the tool time limit of %ss, it will be terminated",
+                        self.get_id_tag(),
+                        runtime,
+                        timelimit,
+                    )
+                    return (
+                        JobState.runner_states.TOOL_TIMELIMIT_REACHED,
+                        f"Job exceeded tool time limit (runtime: {str(runtime).split('.')[0]}, limit: {timelimit}s)",
+                    )
         return None
 
     def has_limits(self):
         has_output_limit = self.app.job_config.limits.output_size and self.app.job_config.limits.output_size > 0
         has_walltime_limit = self.app.job_config.limits.walltime_delta is not None
-        return has_output_limit or has_walltime_limit
+        has_tool_timelimit = self.tool is not None and self.tool.timelimit is not None
+        return has_output_limit or has_walltime_limit or has_tool_timelimit
 
     def get_command_line(self):
         """Return complete command line, including possible version command."""
         if self.remote_command_line:
             return None
-        return f'{self.version_command_line or ""}{self.command_line}'
+        return f"{self.version_command_line or ''}{self.command_line}"
 
     def get_env_setup_clause(self):
         if self.app.config.environment_setup_file is None:
@@ -2666,7 +2703,9 @@ class MinimalJobWrapper(HasResourceParameters):
         else:
             return "anonymous@unknown"
 
-    def __update_output(self, job, hda, clean_only=False):
+    def __update_output(
+        self, job: Job, hda: "HistoryDatasetAssociation | LibraryDatasetDatasetAssociation", clean_only: bool = False
+    ):
         """Handle writing outputs to the object store.
 
         This should be called regardless of whether the job was failed or not so
@@ -2674,8 +2713,9 @@ class MinimalJobWrapper(HasResourceParameters):
         cleaned up if the dataset has been purged.
         """
         dataset = hda.dataset
+        assert dataset is not None
         dataset.set_total_size()
-        if dataset not in job.output_library_datasets:
+        if not isinstance(hda, LibraryDatasetDatasetAssociation):
             purged = dataset.purged
             if not purged and not clean_only:
                 self.object_store.update_from_file(dataset, create=True)
@@ -2685,7 +2725,7 @@ class MinimalJobWrapper(HasResourceParameters):
                 # is a bit of hack - our object store abstractions would be stronger
                 # and more consistent if tools weren't writing there directly.
                 try:
-                    dataset.full_delete()
+                    dataset.full_delete(user=hda.user)
                 except ObjectNotFound:
                     pass
 
@@ -2797,9 +2837,9 @@ class JobWrapper(MinimalJobWrapper):
     def set_job_destination(
         self,
         job_destination: JobDestination,
-        external_id: Union[str, None] = None,
+        external_id: str | None = None,
         flush: bool = True,
-        job: Union[Job, None] = None,
+        job: Job | None = None,
     ) -> None:
         """
         Persist job destination params in the database for recovery.

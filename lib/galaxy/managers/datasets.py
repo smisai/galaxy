@@ -7,7 +7,6 @@ import logging
 import os
 from typing import (
     Any,
-    Optional,
     TypeVar,
 )
 
@@ -18,6 +17,7 @@ from galaxy import (
     model,
 )
 from galaxy.datatypes import sniff
+from galaxy.exceptions import ObjectInvalid
 from galaxy.managers import (
     base,
     deletable,
@@ -32,7 +32,11 @@ from galaxy.model import (
     DatasetPermissions,
     HistoryDatasetAssociation,
 )
-from galaxy.model.db.role import get_private_role_user_emails_dict
+from galaxy.model.db.role import (
+    get_private_role_user_emails_dict,
+    role_name_id_pairs,
+)
+from galaxy.objectstore import ObjectStoreAuth
 from galaxy.schema.tasks import (
     ComputeDatasetHashTaskRequest,
     PurgeDatasetsTaskRequest,
@@ -68,7 +72,7 @@ class DatasetManager(
     def copy(self, item, **kwargs):
         raise exceptions.NotImplemented("Datasets cannot be copied")
 
-    def purge(self, item, flush=True, **kwargs):
+    def purge(self, item, flush=True, user=None, **kwargs):
         """
         Remove the object_store/file for this dataset from storage and mark
         as purged.
@@ -78,14 +82,14 @@ class DatasetManager(
         self.error_unless_dataset_purge_allowed(item)
 
         # the following also marks dataset as purged and deleted
-        item.full_delete()
+        item.full_delete(user=user)
         self.session().add(item)
         if flush:
             session = self.session()
             session.commit()
         return item
 
-    def purge_datasets(self, request: PurgeDatasetsTaskRequest):
+    def purge_datasets(self, request: PurgeDatasetsTaskRequest, user: model.User | None = None):
         """
         Caution: any additional security checks must be done before executing this action.
 
@@ -93,14 +97,14 @@ class DatasetManager(
         They might not be removed if there are still un-purged associations to the dataset.
         """
         self.error_unless_dataset_purge_allowed()
-        with self.session().begin():
-            for dataset_id in request.dataset_ids:
-                dataset: Optional[Dataset] = self.session().get(Dataset, dataset_id)
-                if dataset and dataset.user_can_purge:
-                    try:
-                        dataset.full_delete()
-                    except Exception:
-                        log.exception(f"Unable to purge dataset ({dataset.id})")
+        for dataset_id in request.dataset_ids:
+            dataset: Dataset | None = self.session().get(Dataset, dataset_id)
+            if dataset and dataset.user_can_purge:
+                try:
+                    dataset.full_delete(user)
+                except Exception:
+                    log.exception(f"Unable to purge dataset ({dataset.id})")
+        self.session().commit()
 
     # TODO: this may be more conv. somewhere else
     # TODO: how to allow admin bypass?
@@ -112,7 +116,7 @@ class DatasetManager(
     # .... accessibility
     # datasets can implement the accessible interface, but accessibility is checked in an entirely different way
     #   than those resources that have a user attribute (histories, pages, etc.)
-    def is_accessible(self, item: Any, user: Optional[model.User], **kwargs) -> bool:
+    def is_accessible(self, item: Any, user: model.User | None, **kwargs) -> bool:
         """
         Is this dataset readable/viewable to user?
         """
@@ -162,13 +166,30 @@ class DatasetManager(
         if dataset.purged:
             log.warning("Unable to calculate hash for purged dataset [%s].", dataset.id)
             return
+        sa_session = self.session()
+        user = None
+        if request.user and request.user.user_id:
+            user = sa_session.get(model.User, request.user.user_id)
+        auth = ObjectStoreAuth(user=user) if user else None
         # For files in extra_files_path
         extra_files_path = request.extra_files_path
-        if extra_files_path:
-            extra_dir = dataset.extra_files_path_name
-            file_path = self.app.object_store.get_filename(dataset, extra_dir=extra_dir, alt_name=extra_files_path)
-        else:
-            file_path = dataset.get_file_name()
+        try:
+            if extra_files_path:
+                extra_dir = dataset.extra_files_path_name
+                file_path = self.app.object_store.get_filename(
+                    dataset,
+                    extra_dir=extra_dir,
+                    alt_name=extra_files_path,
+                    auth=auth,
+                )
+            else:
+                file_path = dataset.get_file_name(auth=auth)
+        except ObjectInvalid:
+            log.warning(
+                "Unable to calculate hash for dataset [%s]: object is invalid (dataset may have failed or been purged).",
+                dataset.id,
+            )
+            return
         hash_function = request.hash_function
         calculated_hash_value = memory_bound_hexdigest(hash_func_name=hash_function, path=file_path)
         dataset_hash = model.DatasetHash(
@@ -179,7 +200,6 @@ class DatasetManager(
         dataset_hash.dataset = dataset
         # TODO: replace/update if the combination of dataset_id/hash_function has already
         # been stored.
-        sa_session = self.session()
         hash = get_dataset_hash(sa_session, dataset.id, hash_function, extra_files_path)
         if hash is None:
             sa_session.add(dataset_hash)
@@ -288,7 +308,10 @@ class DatasetSerializer(base.ModelSerializer[DatasetManager], deletable.Purgable
         # expensive: allow config option due to cost of operation
         if is_admin or self.app.config.expose_dataset_path:
             if not dataset.purged:
-                return dataset.get_file_name(sync_cache=False)
+                try:
+                    return dataset.get_file_name(sync_cache=False)
+                except exceptions.ObjectNotFound:
+                    return None
         self.skip()
 
     def serialize_extra_files_path(self, item, key, user=None, **context):
@@ -344,7 +367,7 @@ class DatasetAssociationManager(
         super().__init__(app)
         self.dataset_manager = DatasetManager(app)
 
-    def is_accessible(self, item: U, user: Optional[model.User], **kwargs: Any) -> bool:
+    def is_accessible(self, item: U, user: model.User | None, **kwargs: Any) -> bool:
         """
         Is this DA accessible to `user`?
         """
@@ -449,33 +472,26 @@ class DatasetAssociationManager(
             library_dataset = None
             dataset = dataset_assoc.dataset
 
-        private_role_emails = get_private_role_user_emails_dict(self.session())
-
         # Omit duplicated roles by converting to set
         access_roles = set(dataset.get_access_roles(self.app.security_agent))
         manage_roles = set(dataset.get_manage_permissions_roles(self.app.security_agent))
-
-        def make_tuples(roles: set):
-            tuples = []
-            for role in roles:
-                # use role name for non-private roles, and user.email from private rules
-                displayed_name = private_role_emails.get(role.id, role.name)
-                role_tuple = (displayed_name, self.app.security.encode_id(role.id))
-                tuples.append(role_tuple)
-            return tuples
-
-        access_dataset_role_list = make_tuples(access_roles)
-        manage_dataset_role_list = make_tuples(manage_roles)
-
-        rval = dict(access_dataset_roles=access_dataset_role_list, manage_dataset_roles=manage_dataset_role_list)
+        modify_roles = set()
         if library_dataset is not None:
             modify_roles = set(
                 self.app.security_agent.get_roles_for_action(
                     library_dataset, self.app.security_agent.permitted_actions.LIBRARY_MODIFY
                 )
             )
-            modify_item_role_list = make_tuples(modify_roles)
-            rval["modify_item_roles"] = modify_item_role_list
+        all_role_ids = {r.id for r in access_roles | manage_roles | modify_roles}
+        private_role_emails = get_private_role_user_emails_dict(self.session(), role_ids=all_role_ids)
+        encode_id = self.app.security.encode_id
+
+        rval = dict(
+            access_dataset_roles=role_name_id_pairs(access_roles, private_role_emails, encode_id),
+            manage_dataset_roles=role_name_id_pairs(manage_roles, private_role_emails, encode_id),
+        )
+        if library_dataset is not None:
+            rval["modify_item_roles"] = role_name_id_pairs(modify_roles, private_role_emails, encode_id)
         return rval
 
     def ensure_dataset_on_disk(self, trans, dataset: U):
@@ -665,7 +681,9 @@ class _UnflattenedMetadataDatasetAssociationSerializer(base.ModelSerializer[T], 
             # TODO: Replace string cast with https://github.com/pydantic/pydantic/pull/9137 on 24.1
             "genome_build": lambda item, key, **context: str(item.dbkey) if item.dbkey is not None else None,
             # derived (not mapped) attributes
-            "data_type": lambda item, key, **context: f"{item.datatype.__class__.__module__}.{item.datatype.__class__.__name__}",
+            "data_type": lambda item, key, **context: (
+                f"{item.datatype.__class__.__module__}.{item.datatype.__class__.__name__}"
+            ),
             "converted": self.serialize_converted_datasets,
             # TODO: metadata/extra files
         }
@@ -674,7 +692,7 @@ class _UnflattenedMetadataDatasetAssociationSerializer(base.ModelSerializer[T], 
         # because of that: we need to add a few keys that will use the default serializer
         self.serializable_keyset.update(["name", "state", "tool_version", "extension", "visible", "dbkey"])
 
-    def _proxy_to_dataset(self, serializer: Optional[base.Serializer] = None, proxy_key: Optional[str] = None):
+    def _proxy_to_dataset(self, serializer: base.Serializer | None = None, proxy_key: str | None = None):
         # dataset associations are (rough) proxies to datasets - access their serializer using this remapping fn
         # remapping done by either kwarg key: IOW dataset attr key (e.g. uuid)
         # or by kwarg serializer: a function that's passed in (e.g. permissions)
@@ -754,9 +772,12 @@ class _UnflattenedMetadataDatasetAssociationSerializer(base.ModelSerializer[T], 
         """
         dataset = item
         if dataset.creating_job:
-            tool = self.app.toolbox.tool_for_job(
-                dataset.creating_job, exact=False, check_access=True, user=context.get("user")
-            )
+            try:
+                tool = self.app.toolbox.tool_for_job(
+                    dataset.creating_job, exact=False, check_access=True, user=context.get("user")
+                )
+            except (exceptions.ItemAccessibilityException, exceptions.InsufficientPermissionsException):
+                return False
             if tool and tool.is_workflow_compatible:
                 return True
         return False

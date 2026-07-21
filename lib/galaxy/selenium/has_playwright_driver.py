@@ -112,13 +112,12 @@ See Also
 """
 
 import abc
+import logging
 from contextlib import contextmanager
 from typing import (
     Any,
     Generic,
     NamedTuple,
-    Optional,
-    Union,
 )
 
 from playwright.sync_api import (
@@ -156,6 +155,8 @@ from .has_driver_protocol import (
 from .playwright_element import PlaywrightElement
 from .wait_methods_mixin import WaitMethodsMixin
 from .web_element_protocol import WebElementProtocol
+
+logger = logging.getLogger(__name__)
 
 UNSPECIFIED_TIMEOUT = object()
 
@@ -212,7 +213,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
     keys: type[PlaywrightKeys] = PlaywrightKeys
     axe_script_url: str = DEFAULT_AXE_SCRIPT_URL
     axe_skip: bool = False
-    _current_frame: Optional[Union[Frame, FrameLocator]] = None
+    _current_frame: Frame | FrameLocator | None = None
     _playwright_resources: PlaywrightResources
 
     @property
@@ -314,6 +315,10 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
             url: The URL to navigate to
         """
         self.page.goto(url)
+
+    def refresh(self) -> None:
+        """Reload the current page."""
+        self.page.reload()
 
     def re_get_with_query_params(self, params_str: str):
         """Add query parameters to current URL and reload."""
@@ -433,7 +438,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         """Check if element is absent."""
         return len(self.find_elements(selector_template)) == 0
 
-    def find_element_by_link_text(self, text: str, element: Optional[ElementHandle] = None) -> WebElementProtocol:
+    def find_element_by_link_text(self, text: str, element: ElementHandle | None = None) -> WebElementProtocol:
         """Find element by link text."""
         if element is not None:
             # Find within element context - need to use element as locator root
@@ -442,7 +447,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         element_handle = self._frame_or_page.locator(selector).first.element_handle()
         return PlaywrightElement(element_handle, self)
 
-    def find_element_by_xpath(self, xpath: str, element: Optional[ElementHandle] = None) -> WebElementProtocol:
+    def find_element_by_xpath(self, xpath: str, element: ElementHandle | None = None) -> WebElementProtocol:
         """Find element by XPath."""
         if element is not None:
             raise NotImplementedError("Finding within element context not yet implemented")
@@ -450,7 +455,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         element_handle = self._frame_or_page.locator(selector).first.element_handle()
         return PlaywrightElement(element_handle, self)
 
-    def find_element_by_id(self, id: str, element: Optional[ElementHandle] = None) -> WebElementProtocol:
+    def find_element_by_id(self, id: str, element: ElementHandle | None = None) -> WebElementProtocol:
         """Find element by ID."""
         if element is not None:
             raise NotImplementedError("Finding within element context not yet implemented")
@@ -458,7 +463,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         element_handle = self._frame_or_page.locator(selector).first.element_handle()
         return PlaywrightElement(element_handle, self)
 
-    def find_element_by_selector(self, selector: str, element: Optional[ElementHandle] = None) -> WebElementProtocol:
+    def find_element_by_selector(self, selector: str, element: ElementHandle | None = None) -> WebElementProtocol:
         """Find element by CSS selector."""
         if element is not None:
             raise NotImplementedError("Finding within element context not yet implemented")
@@ -466,7 +471,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         return PlaywrightElement(element_handle, self)
 
     def find_elements_by_selector(
-        self, selector: str, element: Optional[ElementHandle] = None
+        self, selector: str, element: ElementHandle | None = None
     ) -> list[WebElementProtocol]:
         """
         Find multiple elements by CSS selector.
@@ -519,7 +524,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
             selector = self._selenium_locator_to_playwright_selector(*selector_template)
         self._frame_or_page.locator(selector).first.select_option(value=value)
 
-    def _timeout_in_ms(self, timeout=UNSPECIFIED_TIMEOUT, wait_type: Optional[WaitTypeT] = None, **kwds) -> float:
+    def _timeout_in_ms(self, timeout=UNSPECIFIED_TIMEOUT, wait_type: WaitTypeT | None = None, **kwds) -> float:
         """
         Convert timeout from seconds to milliseconds.
 
@@ -650,6 +655,16 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         """Internal implementation of double-click."""
         element.dblclick()
 
+    def fire_mousedown(self, element: WebElementProtocol) -> None:
+        """Dispatch a mousedown event on an element."""
+        self._fire_mousedown(self._unwrap_element(element))
+
+    def _fire_mousedown(self, element: ElementHandle) -> None:
+        self.execute_script(
+            "arguments[0].dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));",
+            element,
+        )
+
     def click(self, selector_template: Target) -> None:
         """
         Click an element using Target selector.
@@ -689,7 +704,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         """
         self._frame_or_page.locator(selector).first.click()
 
-    def send_enter(self, element: Optional[WebElementProtocol] = None) -> None:
+    def send_enter(self, element: WebElementProtocol | None = None) -> None:
         """
         Send ENTER key.
 
@@ -701,7 +716,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         else:
             self._send_key_to_element(self.keys.ENTER, self._unwrap_element(element))
 
-    def send_escape(self, element: Optional[WebElementProtocol] = None) -> None:
+    def send_escape(self, element: WebElementProtocol | None = None) -> None:
         """
         Send ESCAPE key.
 
@@ -713,7 +728,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         else:
             self._send_key_to_element(self.keys.ESCAPE, self._unwrap_element(element))
 
-    def send_backspace(self, element: Optional[WebElementProtocol] = None) -> None:
+    def send_backspace(self, element: WebElementProtocol | None = None) -> None:
         """
         Send BACKSPACE key.
 
@@ -763,7 +778,10 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
 
     def _hover(self, element: ElementHandle) -> None:
         """Internal implementation of hover."""
-        element.hover()
+        # force=True bypasses actionability checks that fail when overlapping
+        # UI elements (e.g. delete-terminal-button) intercept pointer events.
+        # Hover is non-destructive so this is safe.
+        element.hover(force=True)
 
     def move_to_and_click(self, element: WebElementProtocol) -> None:
         """
@@ -778,8 +796,8 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
 
     def _move_to_and_click(self, element: ElementHandle) -> None:
         """Internal implementation of move_to_and_click."""
-        element.hover()
-        element.click()
+        element.hover(force=True)
+        element.click(force=True)
 
     def drag_and_drop(self, source: WebElementProtocol, target: WebElementProtocol) -> None:
         """
@@ -797,23 +815,18 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         """
         Internal implementation of drag and drop.
 
-        Uses JavaScript to simulate drag and drop events.
+        Creates a real DataTransfer via evaluate_handle so setData/getData
+        work across the full drag event sequence (unlike synthetic DragEvents
+        where Chrome restricts getData to return empty).
         """
-        self.page.evaluate(
-            """
-            (elements) => {
-                const [source, target] = elements;
-                const dataTransfer = new DataTransfer();
-                const dragstart = new DragEvent('dragstart', { dataTransfer, bubbles: true });
-                const dragover = new DragEvent('dragover', { dataTransfer, bubbles: true });
-                const drop = new DragEvent('drop', { dataTransfer, bubbles: true });
-                source.dispatchEvent(dragstart);
-                target.dispatchEvent(dragover);
-                target.dispatchEvent(drop);
-            }
-            """,
-            [source, target],
-        )
+        dt = self.page.evaluate_handle("() => new DataTransfer()")
+        source.dispatch_event("pointerdown")
+        source.dispatch_event("dragstart", {"dataTransfer": dt})
+        target.dispatch_event("dragenter", {"dataTransfer": dt})
+        target.dispatch_event("dragover", {"dataTransfer": dt})
+        target.dispatch_event("drop", {"dataTransfer": dt})
+        source.dispatch_event("dragend", {"dataTransfer": dt})
+        source.dispatch_event("pointerup")
 
     def action_chains(self):
         """
@@ -829,7 +842,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         # that indicates it exists but isn't used the same way
         return self
 
-    def switch_to_frame(self, frame_reference: Union[str, int, ElementHandle, PlaywrightElement] = "frame"):
+    def switch_to_frame(self, frame_reference: str | int | ElementHandle | PlaywrightElement = "frame"):
         """
         Switch to an iframe or frame.
 
@@ -849,16 +862,23 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
         state to track the current frame.
         """
         if isinstance(frame_reference, str):
-            # Find frame by name or id
-            # Try as name attribute first
+            # Find frame by name or id (matching Selenium's switch_to.frame behavior)
             frame = self.page.frame(name=frame_reference)
-            if frame is None:
-                # Try as frame locator by name attribute selector
-                frame_locator = self.page.frame_locator(f"[name='{frame_reference}']")
-                # Store the frame locator for future use
-                self._current_frame = frame_locator
-            else:
+            if frame is not None:
                 self._current_frame = frame
+            else:
+                # Selenium also matches by id — locate the iframe element and
+                # resolve its content Frame so downstream code (axe_eval, etc.)
+                # gets a proper Frame object rather than a FrameLocator.
+                selector = f"iframe[name='{frame_reference}'], iframe[id='{frame_reference}']"
+                iframe_el = self.page.query_selector(selector)
+                if iframe_el is not None:
+                    self._current_frame = iframe_el.content_frame()
+                else:
+                    # Last resort: use a FrameLocator (limited API)
+                    self._current_frame = self.page.frame_locator(
+                        f"[name='{frame_reference}'], [id='{frame_reference}']"
+                    )
         elif isinstance(frame_reference, int):
             # Get frame by index
             frames = self.page.frames
@@ -1067,7 +1087,7 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
             msg += f" {timeout_exception.message}"
         return PlaywrightTimeoutException(msg)
 
-    def axe_eval(self, context: Optional[str] = None, write_to: Optional[str] = None) -> AxeResults:
+    def axe_eval(self, context: str | None = None, write_to: str | None = None) -> AxeResults:
         """
         Run axe-core accessibility tests on the current page.
 
@@ -1134,9 +1154,23 @@ class HasPlaywrightDriver(TimeoutMessageMixin, WaitMethodsMixin, Generic[WaitTyp
 
         This closes all windows/tabs and releases all system resources.
         The driver cannot be used after calling this method.
+
+        ``browser.close()`` can raise — in CI we've seen it time out or hit
+        target-detached errors — and if the exception escapes before
+        ``playwright.stop()`` runs, the per-instance asyncio loop is left
+        registered as "running" on the main thread. Every subsequent test's
+        ``sync_playwright().__enter__`` then refuses to start with "Playwright
+        Sync API inside the asyncio loop", cascading the whole shard into
+        errors. Always tear down the Playwright instance even if the browser
+        close failed.
         """
-        self.close()
-        self._playwright_resources.playwright.stop()
+        try:
+            self.close()
+        finally:
+            try:
+                self._playwright_resources.playwright.stop()
+            except Exception:
+                logger.exception("Error stopping Playwright instance during quit()")
 
 
 __all__ = (

@@ -6,20 +6,29 @@ import axios, { type AxiosResponse } from "axios";
 import { defineStore } from "pinia";
 import Vue, { computed, type Ref, ref, shallowRef } from "vue";
 
+import {
+    MY_PANEL_VIEW_DESCRIPTION,
+    MY_PANEL_VIEW_ID,
+    MY_PANEL_VIEW_NAME,
+    MY_PANEL_VIEW_TYPE,
+} from "@/components/Panels/panelViews";
 import { FAVORITES_KEYS, filterTools, type types_to_icons } from "@/components/Panels/utilities";
 import { parseHelpForSummary } from "@/components/ToolsList/utilities";
 import { useUserLocalStorage } from "@/composables/userLocalStorage";
 import { getAppRoot } from "@/onload/loadConfig";
 import { rethrowSimple } from "@/utils/simple-error";
 
+export type FilterValue = string | string[] | undefined;
+
 export interface FilterSettings {
-    [key: string]: string | undefined;
+    [key: string]: FilterValue;
     name?: string;
     section?: string;
     ontology?: string;
     id?: string;
     owner?: string;
     help?: string;
+    tag?: string[];
 }
 
 export interface Panel {
@@ -31,6 +40,7 @@ export interface Panel {
     searchable: boolean;
 }
 
+// TODO: Once the backend models are typed, we will replace these with the generated types from the schema.
 export interface Tool {
     model_class: string;
     id: string;
@@ -40,13 +50,12 @@ export interface Tool {
     labels: string[];
     edam_operations: string[];
     edam_topics: string[];
+    tool_tags?: string[];
     hidden: "" | boolean;
     is_workflow_compatible: boolean;
     xrefs: string[];
     config_file: string;
     link: string;
-    min_width: number;
-    target: string;
     panel_section_id: string;
     panel_section_name: string | null;
     form_style: string;
@@ -58,10 +67,11 @@ export interface Tool {
         changeset_revision: string;
         tool_shed: string;
     };
+    help?: string;
 }
 
 export interface ToolSection {
-    model_class: string;
+    model_class: "ToolSection";
     id: string;
     name: string;
     title?: string;
@@ -69,11 +79,11 @@ export interface ToolSection {
     description?: string;
     links?: Record<string, string>;
     tools?: (string | ToolSectionLabel)[];
-    elems?: (Tool | ToolSection)[];
+    elems?: (Tool | ToolSection)[]; // TODO: Are we sure that a `ToolSection` can have `ToolSection` children?
 }
 
 export interface ToolSectionLabel {
-    model_class: string;
+    model_class: "ToolSectionLabel";
     id: string;
     text: string;
     version?: string;
@@ -81,10 +91,29 @@ export interface ToolSectionLabel {
     links?: Record<string, string> | null;
 }
 
+export type ToolPanelItem = Tool | ToolSection | ToolSectionLabel;
+
 export type ToolHelpData = {
     help?: string;
+    helpFormat?: string;
     summary?: string;
 };
+
+type ToolHelpResponse = {
+    help?: string;
+    help_format?: string;
+};
+
+const MY_PANEL_VIEW: Panel = {
+    id: MY_PANEL_VIEW_ID,
+    model_class: "MyToolsToolPanelView",
+    name: MY_PANEL_VIEW_NAME,
+    description: MY_PANEL_VIEW_DESCRIPTION,
+    view_type: MY_PANEL_VIEW_TYPE,
+    searchable: true,
+};
+
+const DEFAULT_PANEL_VIEW_ID = "default";
 
 export const useToolStore = defineStore("toolStore", () => {
     const currentPanelView: Ref<string> = useUserLocalStorage("tool-store-view", "");
@@ -92,10 +121,11 @@ export const useToolStore = defineStore("toolStore", () => {
     const loading = ref(false);
     const panels = ref<Record<string, Panel>>({});
     const searchWorker = ref<Worker | undefined>(undefined);
+    const toolTagsLoaded = ref(false);
     const toolsById = shallowRef<Record<string, Tool>>({});
     const toolResults = ref<Record<string, string[]>>({});
-    const toolSections = ref<Record<string, Record<string, Tool | ToolSection>>>({});
-    const fetchedHelpIds = ref<Set<string>>(new Set());
+    const toolSections = ref<Record<string, Record<string, ToolPanelItem>>>({});
+    const fetchedHelpIds = ref<Map<string, Promise<void>>>(new Map());
     const helpDataCached = ref<Record<string, ToolHelpData>>({});
 
     const currentToolSections = computed(() => {
@@ -185,12 +215,13 @@ export const useToolStore = defineStore("toolStore", () => {
     });
 
     async function fetchToolSections(panelView: string) {
+        if (!panelView || toolSections.value[panelView]) {
+            return;
+        }
         try {
-            if (panelView && !toolSections.value[panelView]) {
-                loading.value = true;
-                const { data } = await axios.get(`${getAppRoot()}api/tool_panels/${panelView}`);
-                saveToolSections(panelView, data);
-            }
+            loading.value = true;
+            const { data } = await axios.get(`${getAppRoot()}api/tool_panels/${panelView}`);
+            saveToolSections(panelView, data);
         } catch (e) {
             rethrowSimple(e);
         } finally {
@@ -203,7 +234,10 @@ export const useToolStore = defineStore("toolStore", () => {
             if (!defaultPanelView.value || Object.keys(panels.value).length === 0) {
                 const { data } = await axios.get(`${getAppRoot()}api/tool_panels`);
                 defaultPanelView.value = data.default_panel_view;
-                panels.value = data.views;
+                panels.value = {
+                    ...data.views,
+                    ...(data.views[MY_PANEL_VIEW_ID] ? {} : { [MY_PANEL_VIEW_ID]: MY_PANEL_VIEW }),
+                };
             }
         } catch (e) {
             rethrowSimple(e);
@@ -232,9 +266,9 @@ export const useToolStore = defineStore("toolStore", () => {
                 }
             }
 
-            // Fetch all tools by IDs if not already fetched
+            // Fetch all tools by IDs if not already fetched.
             if (Object.keys(toolsById.value).length === 0) {
-                const { data } = await axios.get(`${getAppRoot()}api/tools?in_panel=False`);
+                const { data } = await axios.get(`${getAppRoot()}api/tools`, { params: { in_panel: false } });
                 saveAllTools(data as Tool[]);
             }
         } catch (e) {
@@ -244,18 +278,51 @@ export const useToolStore = defineStore("toolStore", () => {
         }
     }
 
-    async function fetchHelpForId(toolId: string) {
+    /**
+     * Fetch the curated `{tool_id: [tag, ...]}` mapping from `/api/tags/tool_tags`
+     * and merge it into `toolsById`. Idempotent: subsequent calls are no-ops
+     * once the mapping has been loaded for the current toolbox.
+     *
+     * Kept separate from `fetchTools` so the bulk `/api/tools` payload doesn't
+     * carry per-tool `tool_tags` — the mapping is only consumed by the My
+     * Tools panel, while every tool-list consumer pays the bandwidth cost.
+     */
+    async function fetchToolTagsMapping() {
+        if (toolTagsLoaded.value) {
+            return;
+        }
         try {
-            if (!helpDataCached.value[toolId] && !fetchedHelpIds.value.has(toolId)) {
-                fetchedHelpIds.value.add(toolId);
+            const { data } = await axios.get(`${getAppRoot()}api/tags/tool_tags`);
+            const mapping = (data ?? {}) as Record<string, string[]>;
+            const merged: Record<string, Tool> = {};
+            for (const [id, tool] of Object.entries(toolsById.value)) {
+                merged[id] = { ...tool, tool_tags: mapping[id] ?? tool.tool_tags ?? [] };
+            }
+            toolsById.value = merged;
+            toolTagsLoaded.value = true;
+        } catch (e) {
+            rethrowSimple(e);
+        }
+    }
 
+    async function fetchHelpForId(toolId: string) {
+        if (helpDataCached.value[toolId]) {
+            return;
+        }
+        const existing = fetchedHelpIds.value.get(toolId);
+        if (existing) {
+            return existing;
+        }
+        const promise = (async () => {
+            try {
                 const toolHelpData: ToolHelpData = {};
 
                 const { data } = (await axios.get(
                     `${getAppRoot()}api/tools/${encodeURIComponent(toolId)}/build`,
-                )) as AxiosResponse<ToolHelpData>;
+                )) as AxiosResponse<ToolHelpResponse>;
 
                 const help = data.help;
+                toolHelpData.helpFormat = data.help_format;
                 if (help && help !== "\n") {
                     toolHelpData.help = help;
                     toolHelpData.summary = parseHelpForSummary(help);
@@ -264,11 +331,13 @@ export const useToolStore = defineStore("toolStore", () => {
                 }
 
                 Vue.set(helpDataCached.value, toolId, toolHelpData);
+            } catch (error) {
+                console.error("Error fetching help:", error);
+                fetchedHelpIds.value.delete(toolId); // Allow retrying on next request
             }
-        } catch (error) {
-            console.error("Error fetching help:", error);
-            fetchedHelpIds.value.delete(toolId); // Allow retrying on next request
-        }
+        })();
+        fetchedHelpIds.value.set(toolId, promise);
+        return promise;
     }
 
     async function initializePanel() {
@@ -288,9 +357,12 @@ export const useToolStore = defineStore("toolStore", () => {
             },
             {} as Record<string, Tool>,
         );
+        // The bulk /api/tools payload doesn't carry tool_tags; reset the loaded
+        // flag so the next mount of the My Tools panel re-fetches the mapping.
+        toolTagsLoaded.value = false;
     }
 
-    function saveToolSections(panelView: string, newPanel: { [id: string]: ToolSection | Tool }) {
+    function saveToolSections(panelView: string, newPanel: { [id: string]: ToolPanelItem }) {
         Vue.set(toolSections.value, panelView, newPanel);
     }
 
@@ -304,6 +376,17 @@ export const useToolStore = defineStore("toolStore", () => {
 
     async function setPanel(panelView: string) {
         try {
+            if (panelView === MY_PANEL_VIEW_ID) {
+                const sectionedPanelView =
+                    defaultPanelView.value && defaultPanelView.value !== MY_PANEL_VIEW_ID
+                        ? defaultPanelView.value
+                        : panels.value[DEFAULT_PANEL_VIEW_ID]
+                          ? DEFAULT_PANEL_VIEW_ID
+                          : null;
+                if (sectionedPanelView) {
+                    await fetchToolSections(sectionedPanelView);
+                }
+            }
             await fetchToolSections(panelView);
             currentPanelView.value = panelView;
         } catch (e) {
@@ -321,6 +404,7 @@ export const useToolStore = defineStore("toolStore", () => {
         fetchPanels,
         fetchToolForId,
         fetchTools,
+        fetchToolTagsMapping,
         getLinkById,
         getTargetById,
         helpDataCached,
@@ -339,6 +423,7 @@ export const useToolStore = defineStore("toolStore", () => {
         searchWorker,
         sectionDatalist,
         setPanel,
+        toolTagsLoaded,
         toolsById,
         toolSections,
     };

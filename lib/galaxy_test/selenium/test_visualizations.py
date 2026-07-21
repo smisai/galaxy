@@ -9,12 +9,12 @@ from .framework import (
     SeleniumTestCase,
 )
 
-IGV_DEFAULT_GENOME = "hg38"
 HG18_DBKEY_TEXT = "Human Mar. 2006 (NCBI36/hg18) (hg18)"
+HG18_TITLE = "Human (hg18)"
+HG38_TITLE = "Human (GRCh38/hg38)"
 
 
 class TestVisualizationsAnonymous(SeleniumTestCase):
-
     @skip_without_datatype("png")
     @skip_without_visualization_plugin("annotate_image")
     @selenium_test
@@ -31,7 +31,6 @@ class TestVisualizationsAnonymous(SeleniumTestCase):
             self.wait_for_selector("#image-annotate")
             self.screenshot("visualization_plugin_charts_image_annotate")
 
-    @selenium_only("Not yet migrated to support Playwright backend - need to implement shadow DOM absractions")
     @selenium_test
     @skip_without_visualization_plugin("tabulator")
     def test_charts_tabulator(self):
@@ -46,7 +45,6 @@ class TestVisualizationsAnonymous(SeleniumTestCase):
             self.wait_for_selector(".tabulator-table")
             self.screenshot("visualization_plugin_tabulator_landing")
 
-    @selenium_only("Not yet migrated to support Playwright backend")
     @selenium_test
     @skip_without_visualization_plugin("h5web")
     def test_charts_h5web(self):
@@ -64,7 +62,9 @@ class TestVisualizationsAnonymous(SeleniumTestCase):
 class TestVisualizations(SeleniumTestCase):
     ensure_registered = True
 
-    @selenium_only("Not yet migrated to support Playwright backend - need to implement shadow DOM absractions")
+    # Playwright strict mode violation: ".n-input__input input" resolves to 2 elements
+    # (visualization name + IGV search input). Needs a more specific selector.
+    @selenium_only
     @selenium_test
     @managed_history
     @skip_without_visualization_plugin("igv")
@@ -76,39 +76,34 @@ class TestVisualizations(SeleniumTestCase):
 
         with self.visualization_panel():
             self._wait_for_igv_container()
-            self.screenshot("visualization_plugin_igv_landing_default_genome")
-            current_genome_text = self._igv_current_genome()
-            assert IGV_DEFAULT_GENOME in current_genome_text
+            igv = self.components.igv
+            igv.confirm_button.wait_for_and_click()
+            igv.expand_button.wait_for_and_click()
+            igv.settings_tab.wait_for_and_click()
+            igv.selected_genome(title=HG38_TITLE).wait_for_present()
+            self.screenshot("visualization_plugin_igv_default_genome")
 
         dataset_component = self.history_panel_ensure_showing_item_details(hid)
         dataset_component.dbkey.wait_for_and_click()
         self.edit_dataset_dbkey(HG18_DBKEY_TEXT)
-
         self.show_dataset_visualization(hid, visualization_id="igv")
 
         with self.visualization_panel():
             self._wait_for_igv_container()
-            current_genome_text = self._igv_current_genome()
-            self.screenshot("visualization_plugin_igv_landing_genome_from_dbkey_apimel3")
-            assert "hg18" in current_genome_text
-
             igv = self.components.igv
-            igv.save_button.assert_absent_or_hidden()
-            igv.settings_button.wait_for_and_click()
-            self.sleep_for(self.wait_types.UX_TRANSITION)
-            igv.name_input.wait_for_and_clear_aggressive_and_send_keys("igv with hg18")
+            igv.confirm_button.assert_absent_or_hidden()
+            igv.expand_button.wait_for_and_click()
+            igv.settings_tab.wait_for_and_click()
+            igv.selected_genome(title=HG18_TITLE).wait_for_present()
+            self.screenshot("visualization_plugin_igv_current_genome")
+
+            igv.name_input.wait_for_and_click()
+            igv.name_input.wait_for_and_clear_and_send_keys("igv with hg18")
+
             igv.save_button.wait_for_and_click()
             self.sleep_for(self.wait_types.UX_TRANSITION)
 
         self.navigate_to_saved_visualizations()
-
-    def _igv_current_genome(self):
-        igv = self.components.igv
-        element = igv.shadow_host.wait_for_present()
-        shadow_root = element.shadow_root
-        igv_current_genome = self.navigation.igv.selectors.current_genome
-        current_genome_element = shadow_root.find_element(*igv_current_genome.component_locator)
-        return current_genome_element.text
 
     def _wait_for_igv_container(self):
         igv = self.components.igv

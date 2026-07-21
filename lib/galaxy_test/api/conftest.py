@@ -5,7 +5,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import (
     Any,
-    Optional,
 )
 
 import pytest
@@ -20,6 +19,11 @@ from galaxy_test.base.api_util import (
     get_user_api_key,
 )
 from galaxy_test.base.env import setup_keep_outdir
+from galaxy_test.base.mock_http_server import (
+    MockHTTPRequestHandler,
+    MockHttpServer,
+    start_mock_http_server,
+)
 from galaxy_test.base.populators import (
     check_missing_tool,
     DatasetCollectionPopulator,
@@ -35,10 +39,10 @@ from galaxy_test.base.testcase import host_port_and_url
 @dataclass
 class ApiConfigObject:
     host: str
-    port: Optional[str]
+    port: str | None
     url: str
-    user_api_key: Optional[str]
-    admin_api_key: Optional[str]
+    user_api_key: str | None
+    admin_api_key: str | None
     test_data_resolver: Any
     keepOutdir: Any
 
@@ -177,3 +181,15 @@ def _requires_marker_to_effective_tool_id(anonymous_galaxy_interactor, marker):
         all_tool_ids = get_tool_ids(anonymous_galaxy_interactor)
         tool_id = [t for t in any_of_tool_ids if t in all_tool_ids][0]
     return tool_id
+
+
+@pytest.fixture(scope="session")
+def mock_http_server():
+    if os.environ.get("GALAXY_TEST_EXTERNAL"):
+        yield MockHttpServer(base_url=None, handler_class=None, is_remote=True)
+    else:
+        server, base_url = start_mock_http_server()
+        try:
+            yield MockHttpServer(base_url=base_url, handler_class=MockHTTPRequestHandler, is_remote=False)
+        finally:
+            server.shutdown()

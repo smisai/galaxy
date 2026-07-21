@@ -10,7 +10,6 @@ import subprocess
 import tempfile
 from typing import (
     IO,
-    Optional,
 )
 
 import ijson
@@ -36,6 +35,7 @@ from galaxy.datatypes.sniff import (
     FilePrefix,
     iter_headers,
 )
+from galaxy.objectstore import ObjectStoreAuth
 from galaxy.util import (
     nice_size,
     string_as_bool,
@@ -210,8 +210,8 @@ class Ipynb(Json):
         trans,
         dataset: DatasetHasHidProtocol,
         preview: bool = False,
-        filename: Optional[str] = None,
-        to_ext: Optional[str] = None,
+        filename: str | None = None,
+        to_ext: str | None = None,
         **kwd,
     ):
         config = trans.app.config
@@ -226,14 +226,15 @@ class Ipynb(Json):
         trans,
         dataset: DatasetHasHidProtocol,
         preview: bool = False,
-        filename: Optional[str] = None,
-        to_ext: Optional[str] = None,
+        filename: str | None = None,
+        to_ext: str | None = None,
         **kwd,
     ) -> tuple[IO, Headers]:
         headers = kwd.pop("headers", {})
         preview = string_as_bool(preview)
+        fname = dataset.get_file_name(auth=ObjectStoreAuth(user=trans.user))
         if to_ext or not preview:
-            return self._serve_raw(dataset, to_ext, headers, **kwd)
+            return self._serve_raw(dataset, to_ext, headers, auth=ObjectStoreAuth(user=trans.user), **kwd)
         else:
             with tempfile.NamedTemporaryFile(delete=False) as ofile_handle:
                 ofilename = ofile_handle.name
@@ -245,7 +246,7 @@ class Ipynb(Json):
                     "html",
                     "--template",
                     "full",
-                    dataset.get_file_name(),
+                    fname,
                     "--output",
                     ofilename,
                 ]
@@ -950,7 +951,7 @@ class SnpEffDb(Text):
         super().__init__(**kwd)
 
     # The SnpEff version line was added in SnpEff version 4.1
-    def getSnpeffVersionFromFile(self, path: str) -> Optional[str]:
+    def getSnpeffVersionFromFile(self, path: str) -> str | None:
         snpeff_version = None
         try:
             with gzip.open(path, "rt") as fh:
@@ -1669,3 +1670,33 @@ class SourmashSignature(Json):
         except Exception:
             pass
         return False
+
+
+@build_sniff_from_prefix
+class Taf(Text):
+    """
+    TAF: a Transposed Alignment Format
+
+    https://github.com/ComparativeGenomicsToolkit/taffy/blob/main/docs/taf_format.md
+    """
+
+    file_ext = "taf"
+
+    def sniff_prefix(self, file_prefix: FilePrefix) -> bool:
+        """
+        Determines wether the file is in taf format
+
+        The first line of a .taf file begins with #taf. This word is followed
+        by white-space-separated 'variable:value' pairs. There should be no white
+        space surrounding the ':'.
+
+        >>> from galaxy.datatypes.sniff import get_test_fname
+        >>> fname = get_test_fname('test.taf')
+        >>> Taf().sniff(fname)
+        True
+        """
+        try:
+            first_line = next(file_prefix.line_iterator(), "")
+        except Exception:
+            return False
+        return re.search(r"^#taf([ \t]+\S+:\S+)+$", first_line) is not None

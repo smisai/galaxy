@@ -4,7 +4,6 @@ from typing import (
     Any,
     cast,
     Literal,
-    Union,
 )
 
 # Playwright browser type names (matches BrowserType.name property)
@@ -207,6 +206,8 @@ def get_local_driver(browser=DEFAULT_BROWSER, headless=False) -> WebDriver:
         chrome_options = ChromeOptions()
         if headless:
             chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
         prefs = {"download.default_directory": DEFAULT_DOWNLOAD_PATH}
         chrome_options.add_experimental_option("prefs", prefs)
         chrome_options.set_capability("goog:loggingPrefs", LOGGING_PREFS)
@@ -301,7 +302,7 @@ def get_playwright_driver(browser: str = DEFAULT_BROWSER, headless: bool = False
 
 def get_remote_driver(host, port, browser=DEFAULT_BROWSER) -> WebDriver:
     # docker run -d -p 4444:4444 -v /dev/shm:/dev/shm selenium/standalone-chrome:3.0.1-aluminum
-    options: Union[webdriver.ChromeOptions, webdriver.FirefoxOptions, webdriver.EdgeOptions, SafariOptions]
+    options: webdriver.ChromeOptions | webdriver.FirefoxOptions | webdriver.EdgeOptions | SafariOptions
     if browser == "auto" or browser == "CHROME":
         options = webdriver.ChromeOptions()
         options.set_capability("goog:loggingPrefs", LOGGING_PREFS)

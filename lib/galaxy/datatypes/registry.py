@@ -52,10 +52,19 @@ class ConfigurationError(Exception):
     pass
 
 
+# Ensure the module logger has at least one handler to avoid "no handlers could
+# be found" warnings when the registry is used outside of a configured Galaxy
+# app. This is done at import time (once) rather than per-instance to avoid
+# progressive accumulation of NullHandlers on long-lived test processes that
+# instantiate ``Registry`` repeatedly (see test/integration driver).
+_module_log = logging.getLogger(__name__)
+if not any(isinstance(h, logging.NullHandler) for h in _module_log.handlers):
+    _module_log.addHandler(logging.NullHandler())
+
+
 class Registry:
     def __init__(self, config=None):
-        self.log = logging.getLogger(__name__)
-        self.log.addHandler(logging.NullHandler())
+        self.log = _module_log
 
         edam_ontology_path = config.get("edam_toolbox_ontology_path", None) if config is not None else None
 
@@ -114,8 +123,8 @@ class Registry:
 
     def load_datatypes(
         self,
-        root_dir: Optional[StrPath] = None,
-        config: Optional[Union[Element, StrPath]] = None,
+        root_dir: StrPath | None = None,
+        config: Element | StrPath | None = None,
         override: bool = True,
         use_converters: bool = True,
         use_display_applications: bool = True,
@@ -209,7 +218,7 @@ class Registry:
                         if override or extension not in self.datatypes_by_extension:
                             can_process_datatype = True
                 if can_process_datatype:
-                    datatype_class: Optional[type[Data]] = None
+                    datatype_class: type[Data] | None = None
                     if dtype is not None:
                         ok = True
                         try:
@@ -532,7 +541,7 @@ class Registry:
         self,
         root: Element,
         override: bool = False,
-        compressed_sniffers: Optional[dict[type["Data"], list["Data"]]] = None,
+        compressed_sniffers: dict[type["Data"], list["Data"]] | None = None,
     ) -> None:
         """
         Process the sniffers element from a parsed a datatypes XML file located at root_dir/config (if processing the Galaxy
@@ -676,15 +685,44 @@ class Registry:
             try:
                 config_path = os.path.join(converter_path, tool_config)
                 converter = toolbox.load_tool(config_path, use_cached=use_cached)
-                self.converter_tools.add(converter)
                 toolbox.register_tool(converter)
-                if source_datatype not in self.datatype_converters:
-                    self.datatype_converters[source_datatype] = {}
-                self.datatype_converters[source_datatype][target_datatype] = converter
+                self._register_converter_tool(converter, source_datatype, target_datatype)
                 if not hasattr(toolbox.app, "tool_cache") or converter.id in toolbox.app.tool_cache._new_tool_ids:
                     self.log.debug("Loaded converter: %s", converter.id)
             except Exception:
                 self.log.exception(f"Error loading converter ({converter_path})")
+
+    def load_datatype_converters_without_toolbox(self, app) -> None:
+        """Load datatype converters for an app that has no toolbox (e.g. the Celery worker).
+
+        Mirrors ``load_datatype_converters`` but builds each converter directly from its tool
+        source rather than through a toolbox, since the Celery worker's minimal
+        ``GalaxyManagerApplication`` has none. Async tool-request execution runs in the worker
+        and relies on ``datatype_converters`` being populated to apply implicit datatype
+        conversion (e.g. decompressing a ``fasta.gz`` input for a ``fasta`` parameter); without
+        this ``find_conversion_destination`` finds no converter and hands the raw dataset to the
+        tool.
+        """
+        # Imported here to avoid a circular import - galaxy.tools depends on galaxy.datatypes.
+        from galaxy.tool_util.parser import get_tool_source
+        from galaxy.tools import create_tool_from_source
+
+        if not self.converters_path:
+            return
+        for tool_config, source_datatype, target_datatype in self.converters:
+            config_path = os.path.join(self.converters_path, tool_config)
+            try:
+                tool_source = get_tool_source(config_file=config_path)
+                converter = create_tool_from_source(app, tool_source, config_file=config_path)
+                self._register_converter_tool(converter, source_datatype, target_datatype)
+            except Exception:
+                self.log.exception(f"Error loading converter ({config_path})")
+        # Drop any cached (empty) converter lookups computed before registration.
+        self._converters_by_datatype = {}
+
+    def _register_converter_tool(self, converter, source_datatype, target_datatype) -> None:
+        self.converter_tools.add(converter)
+        self.datatype_converters.setdefault(source_datatype, {})[target_datatype] = converter
 
     def load_display_applications(self, app):
         """
@@ -896,10 +934,10 @@ class Registry:
 
     def find_conversion_destination_for_dataset_by_extensions(
         self,
-        dataset_or_ext: Union[str, DatasetProtocol],
+        dataset_or_ext: str | DatasetProtocol,
         accepted_formats: Iterable[Union[str, "Data"]],
         converter_safe: bool = True,
-    ) -> tuple[bool, Optional[str], Optional[DatasetProtocol]]:
+    ) -> tuple[bool, str | None, DatasetProtocol | None]:
         """
         returns (direct_match, converted_ext, converted_dataset)
         - direct match is True iff no the data set already has an accepted format
@@ -992,8 +1030,7 @@ class Registry:
 
     def to_xml_file(self, path):
         if not self._registry_xml_string:
-            registry_string_template = Template(
-                """<?xml version="1.0"?>
+            registry_string_template = Template("""<?xml version="1.0"?>
             <datatypes>
               <registration converters_path="$converters_path" display_path="$display_path">
                 $datatype_elems
@@ -1002,8 +1039,7 @@ class Registry:
                 $sniffer_elems
               </sniffers>
             </datatypes>
-            """
-            )
+            """)
             converters_path = self.converters_path_attr or ""
             display_path = self.display_path_attr or ""
             datatype_elems = "".join(galaxy.util.xml_to_string(elem) for elem in self.datatype_elems)
@@ -1052,7 +1088,7 @@ class Registry:
         return state
 
 
-def upload_warning(template: Optional[Template], auto_compressed_type: Optional[str] = None) -> Optional[str]:
+def upload_warning(template: Template | None, auto_compressed_type: str | None = None) -> str | None:
     if template is None:
         return None
     template_args = {"auto_compressed_type": "" if auto_compressed_type is None else f".{auto_compressed_type}"}

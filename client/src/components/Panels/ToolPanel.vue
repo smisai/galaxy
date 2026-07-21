@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { BAlert, BBadge } from "bootstrap-vue";
 import { storeToRefs } from "pinia";
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 
 import { useToolStore } from "@/stores/toolStore";
 import { useUserStore } from "@/stores/userStore";
+import localize from "@/utils/localization";
 import { errorMessageAsString } from "@/utils/simple-error";
+
+import { MY_PANEL_VIEW_ID } from "./panelViews";
+import { countUniqueToolsInList, countUniqueToolsInPanel } from "./utilities";
 
 import LoadingSpan from "../LoadingSpan.vue";
 import ActivityPanel from "./ActivityPanel.vue";
@@ -25,11 +29,42 @@ const emit = defineEmits<{
     (e: "onInsertTool", toolId: string, toolName: string): void;
 }>();
 
-const { currentPanelView, currentToolSections, isPanelPopulated, toolSections } = storeToRefs(toolStore);
+const { currentPanelView, currentToolSections, defaultPanelView, isPanelPopulated, toolSections, toolsById } =
+    storeToRefs(toolStore);
+const isMyPanel = computed(() => currentPanelView.value === MY_PANEL_VIEW_ID);
 
 const errorMessage = ref("");
 const panelsFetched = ref(false);
 const showFavorites = ref(false);
+const defaultToolSections = computed(() => {
+    return (
+        toolSections.value.default ||
+        (defaultPanelView.value && defaultPanelView.value !== MY_PANEL_VIEW_ID
+            ? toolSections.value[defaultPanelView.value]
+            : null)
+    );
+});
+const headerToolSections = computed(() => {
+    if (isMyPanel.value) {
+        return defaultToolSections.value || currentToolSections.value;
+    }
+    return currentToolSections.value;
+});
+const toolsCount = computed(() =>
+    countUniqueToolsInPanel(headerToolSections.value, countUniqueToolsInList(toolsById.value)),
+);
+
+function formatToolsCount(count: number) {
+    if (count < 1000) {
+        return `${count}`;
+    }
+    const thousands = Math.floor(count / 1000);
+    return `${thousands}k+`;
+}
+
+const discoverToolsLabel = computed(() => {
+    return `${localize("Discover")} ${formatToolsCount(toolsCount.value)} ${localize("Tools")}`;
+});
 
 async function initializePanel() {
     try {
@@ -72,19 +107,20 @@ initializePanel();
         title="Tools"
         aria-labelledby="toolbox-heading"
         class="toolbox-panel"
-        go-to-all-title="Discover Tools"
+        :go-to-all-title="discoverToolsLabel"
         go-to-all-data-description="toolbox discover tools"
-        href="/tools/list">
+        :href="!props.workflow ? `/tools/list` : undefined">
         <template v-slot:activity-panel-header-top>
             <PanelViewMenu />
         </template>
         <template v-slot:header-buttons>
-            <FavoritesButton v-model="showFavorites" />
+            <FavoritesButton v-if="!isMyPanel" v-model="showFavorites" />
         </template>
         <ToolBox
             v-if="isPanelPopulated"
             :workflow="props.workflow"
             :show-favorites.sync="showFavorites"
+            :favorites-default="isMyPanel"
             :use-search-worker="useSearchWorker"
             @onInsertTool="onInsertTool" />
         <div v-else-if="errorMessage" data-description="tool panel error message">
@@ -110,6 +146,9 @@ initializePanel();
     :deep(.activity-panel-header) {
         margin-right: 1rem;
         margin-left: 1rem;
+        .activity-panel-header-top {
+            align-items: flex-start;
+        }
     }
 }
 </style>

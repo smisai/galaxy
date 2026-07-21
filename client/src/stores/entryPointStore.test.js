@@ -1,27 +1,44 @@
-import axios from "axios";
-import MockAdapter from "axios-mock-adapter";
 import flushPromises from "flush-promises";
 import { createPinia, setActivePinia } from "pinia";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { HttpResponse, useServerMock } from "@/api/client/__mocks__";
 
 import testInteractiveToolsResponse from "../components/InteractiveTools/testData/testInteractiveToolsResponse";
+import { sseMockFactory } from "./_testing/sseStoreSupport";
 import { useEntryPointStore } from "./entryPointStore";
 
+// ``vi.mock`` is hoisted above module-level declarations, so the capture-state
+// has to be built via ``vi.hoisted`` to be visible to the factory. Prevents
+// these tests from opening a real EventSource against ``/api/events/stream``
+// when ``useEntryPointStore()`` is invoked.
+const sseState = vi.hoisted(() => ({
+    onEvent: null,
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    connected: null,
+}));
+vi.mock("@/composables/useNotificationSSE", () => sseMockFactory(sseState));
+
+const { server, http } = useServerMock();
+
 describe("stores/EntryPointStore", () => {
-    let axiosMock;
     let store;
 
     beforeEach(async () => {
-        axiosMock = new MockAdapter(axios);
+        server.use(
+            http.untyped.get("/api/entry_points", ({ request }) => {
+                const url = new URL(request.url);
+                if (url.searchParams.get("running") === "true") {
+                    return HttpResponse.json(testInteractiveToolsResponse);
+                }
+                return HttpResponse.json([]);
+            }),
+        );
         setActivePinia(createPinia());
-        axiosMock.onGet("/api/entry_points", { params: { running: true } }).reply(200, testInteractiveToolsResponse);
         store = useEntryPointStore();
         await store.fetchEntryPoints();
         await flushPromises();
-    });
-
-    afterEach(() => {
-        axiosMock.restore();
     });
 
     it("performs a partial update", async () => {

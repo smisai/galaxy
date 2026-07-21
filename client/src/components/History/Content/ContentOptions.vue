@@ -18,6 +18,7 @@ import { computed, type Ref, ref } from "vue";
 
 import { getAppRoot } from "@/onload/loadConfig";
 import { useEntryPointStore } from "@/stores/entryPointStore";
+import localize from "@/utils/localization";
 import { prependPath } from "@/utils/redirect";
 
 const props = defineProps({
@@ -110,9 +111,9 @@ function onDisplay($event: MouseEvent) {
         <!-- Special case for collections -->
         <BButton
             v-if="isCollection && canShowCollectionDetails"
-            v-b-tooltip.hover
+            v-g-tooltip.hover
             class="collection-job-details-btn px-1"
-            title="Show Details"
+            :title="localize('Show Details')"
             size="sm"
             variant="link"
             :href="showCollectionDetailsUrl"
@@ -122,8 +123,8 @@ function onDisplay($event: MouseEvent) {
         <!-- Common for all content items -->
         <BButton
             v-if="isDataset"
-            v-b-tooltip.hover
-            title="View"
+            v-g-tooltip.hover
+            :title="localize('View')"
             tabindex="0"
             class="display-btn px-1"
             size="sm"
@@ -134,9 +135,9 @@ function onDisplay($event: MouseEvent) {
         </BButton>
         <BButton
             v-if="writable && isHistoryItem"
-            v-b-tooltip.hover
+            v-g-tooltip.hover
             :disabled="editDisabled"
-            :title="editButtonTitle"
+            :title="localize(editButtonTitle)"
             tabindex="0"
             class="edit-btn px-1"
             size="sm"
@@ -147,9 +148,9 @@ function onDisplay($event: MouseEvent) {
         </BButton>
         <BButton
             v-if="isRunningInteractiveTool"
-            v-b-tooltip.hover
+            v-g-tooltip.hover
             class="delete-btn px-1"
-            title="Stop this Interactive Tool"
+            :title="localize('Stop this Interactive Tool')"
             size="sm"
             variant="link"
             @click.stop="onDelete($event)">
@@ -157,10 +158,10 @@ function onDisplay($event: MouseEvent) {
         </BButton>
         <BButton
             v-else-if="writable && isHistoryItem && !isDeleted"
-            v-b-tooltip.hover
+            v-g-tooltip.hover
             :tabindex="isDataset ? '0' : '-1'"
             class="delete-btn px-1"
-            title="Delete"
+            :title="localize('Delete')"
             size="sm"
             variant="link"
             @click.stop="onDelete($event)">
@@ -181,10 +182,10 @@ function onDisplay($event: MouseEvent) {
         </BButton>
         <BButton
             v-if="writable && isHistoryItem && isDeleted"
-            v-b-tooltip.hover
+            v-g-tooltip.hover
             tabindex="0"
             class="undelete-btn px-1"
-            title="Undelete"
+            :title="localize('Undelete')"
             size="sm"
             variant="link"
             @click.stop="emit('undelete')">
@@ -192,10 +193,10 @@ function onDisplay($event: MouseEvent) {
         </BButton>
         <BButton
             v-if="writable && isHistoryItem && !isVisible"
-            v-b-tooltip.hover
+            v-g-tooltip.hover
             tabindex="0"
             class="unhide-btn px-1"
-            title="Unhide"
+            :title="localize('Unhide')"
             size="sm"
             variant="link"
             @click.stop="emit('unhide')">

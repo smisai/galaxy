@@ -742,6 +742,16 @@ class TestActionChainsAndKeys:
         # Verify the field is cleared
         assert element.get_attribute("value") == ""
 
+    def test_fire_mousedown(self, has_driver_instance, base_url):
+        """Test firing mousedown event on an element."""
+        has_driver_instance.navigate_to(f"{base_url}/basic.html")
+        target = has_driver_instance.find_element_by_id("mousedown-target")
+        indicator = has_driver_instance.find_element_by_id("mousedown-indicator")
+        assert not indicator.is_displayed()
+        has_driver_instance.fire_mousedown(target)
+        indicator = has_driver_instance.find_element_by_id("mousedown-indicator")
+        assert indicator.is_displayed()
+
 
 class TestFrameSwitching:
     """Tests for frame switching functionality."""
@@ -888,7 +898,7 @@ class TestUtilityMethods:
     def test_prepend_timeout_message(self, has_driver_instance, request):
         """Test prepending message to timeout exception."""
         backend = request.node.callspec.params.get("has_driver_instance")
-        if backend == "selenium":
+        if backend in ("selenium", "proxy-selenium"):
             original_selenium_exc = SeleniumTimeoutException(msg="original message")
             new_selenium_exception = has_driver_instance.prepend_timeout_message(original_selenium_exc, "New prefix:")
             assert "New prefix:" in new_selenium_exception.msg

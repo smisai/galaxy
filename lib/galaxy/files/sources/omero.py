@@ -1,12 +1,11 @@
+import os
+import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import (
-    Iterator,
-    Optional,
-    Union,
+    TYPE_CHECKING,
 )
-
-from PIL import Image as PILImage
 
 from galaxy.exceptions import (
     AuthenticationFailed,
@@ -27,18 +26,29 @@ from galaxy.files.sources import (
 from galaxy.util.config_templates import TemplateExpansion
 
 try:
-    import omero.sys
-    from omero.gateway import BlitzGateway
+    import tifffile
 except ImportError:
+    tifffile = None  # type: ignore[assignment,unused-ignore]
+
+# OMERO imports are deferred to avoid temp manager side effects at module import time.
+# At runtime these are populated by _ensure_omero_imported() before first use.
+if TYPE_CHECKING:
+    import omero
+    from omero.gateway import BlitzGateway
+else:
     omero = None
     BlitzGateway = None
 
 
+OMERO_TMPDIR_ENV_VAR = "OMERO_TMPDIR"
+OMERO_TMPDIR_FALLBACK = os.path.join(tempfile.gettempdir(), "galaxy", "file_sources", "omero")
+
+
 class OmeroFileSourceTemplateConfiguration(BaseFileSourceTemplateConfiguration):
-    username: Union[str, TemplateExpansion]
-    password: Union[str, TemplateExpansion]
-    host: Union[str, TemplateExpansion]
-    port: Union[int, TemplateExpansion]
+    username: str | TemplateExpansion
+    password: str | TemplateExpansion
+    host: str | TemplateExpansion
+    port: int | TemplateExpansion
 
 
 class OmeroFileSourceConfiguration(BaseFileSourceConfiguration):
@@ -53,16 +63,14 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
     plugin_kind = PluginKind.rfs
     supports_pagination = True
     supports_search = True
-    required_module = BlitzGateway
     required_package = "omero-py (requires manual Zeroc IcePy installation)"
 
     template_config_class = OmeroFileSourceTemplateConfiguration
     resolved_config_class = OmeroFileSourceConfiguration
 
     def __init__(self, template_config: OmeroFileSourceTemplateConfiguration):
-        if self.required_module is None:
-            raise self.required_package_exception
         super().__init__(template_config)
+        self._configured_omero_tmpdir: str | None = None
 
     @property
     def required_package_exception(self) -> Exception:
@@ -71,6 +79,43 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
             "Please see https://omero.readthedocs.io/en/stable/developers/Python.html for installation instructions."
         )
 
+    def _resolve_omero_tmpdir(self) -> str:
+        """Determine the OMERO temp directory to use, preferring Galaxy config and falling back to a safe default."""
+        configured_tmpdir = self._file_sources_config.tmp_dir if self._file_sources_config else None
+        if configured_tmpdir:
+            return configured_tmpdir
+        return OMERO_TMPDIR_FALLBACK
+
+    def _configure_omero_tmpdir(self) -> None:
+        """Set OMERO temp dir env var from Galaxy config or a Galaxy-scoped system tmp fallback."""
+        configured_tmpdir = self._resolve_omero_tmpdir()
+        if self._configured_omero_tmpdir == configured_tmpdir:
+            return
+
+        if configured_tmpdir == OMERO_TMPDIR_FALLBACK:
+            os.makedirs(configured_tmpdir, exist_ok=True)
+
+        os.environ[OMERO_TMPDIR_ENV_VAR] = configured_tmpdir
+        self._configured_omero_tmpdir = configured_tmpdir
+
+    def _ensure_omero_imported(self) -> None:
+        """Import OMERO modules if not already imported, and handle missing dependency."""
+        global omero
+        global BlitzGateway
+
+        if BlitzGateway is not None:
+            return
+
+        try:
+            import omero as omero_module
+            import omero.sys
+            from omero.gateway import BlitzGateway as blitz_gateway
+        except ImportError:
+            raise self.required_package_exception
+
+        omero = omero_module
+        BlitzGateway = blitz_gateway
+
     @contextmanager
     def _connection(self, context: FilesSourceRuntimeContext[OmeroFileSourceConfiguration]) -> Iterator[BlitzGateway]:
         """Context manager for OMERO connections with automatic cleanup.
@@ -78,8 +123,8 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         Establishes a connection to the OMERO server, enables keepalive for long-running
         operations, and ensures proper cleanup on exit.
         """
-        if BlitzGateway is None:
-            raise self.required_package_exception
+        self._configure_omero_tmpdir()
+        self._ensure_omero_imported()
 
         conn = BlitzGateway(
             username=context.config.username,
@@ -95,7 +140,13 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
             )
 
         try:
-            conn.c.enableKeepAlive(60)
+            client = conn.c
+            if client is None:
+                raise AuthenticationFailed(
+                    f"Connected to OMERO server at {context.config.host}:{context.config.port}, "
+                    "but no active OMERO client session was established."
+                )
+            client.enableKeepAlive(60)
             yield conn
         finally:
             conn.close()
@@ -106,10 +157,10 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         path="/",
         recursive=False,
         write_intent: bool = False,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        query: Optional[str] = None,
-        sort_by: Optional[str] = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        query: str | None = None,
+        sort_by: str | None = None,
     ) -> tuple[list[AnyRemoteEntry], int]:
         """
         List OMERO objects in a hierarchical structure:
@@ -136,9 +187,9 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         self,
         omero: BlitzGateway,
         path_parts: list[str],
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        query: Optional[str] = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        query: str | None = None,
     ) -> list[AnyRemoteEntry]:
         """List entries based on the path depth."""
         if len(path_parts) == 0:
@@ -149,7 +200,7 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
             return self._list_images(omero, path_parts[0], path_parts[1], limit=limit, offset=offset, query=query)
         return []
 
-    def _count_entries_for_path(self, omero: BlitzGateway, path_parts: list[str], query: Optional[str] = None) -> int:
+    def _count_entries_for_path(self, omero: BlitzGateway, path_parts: list[str], query: str | None = None) -> int:
         """Count total entries for pagination without loading all objects."""
         if len(path_parts) == 0:
             return self._count_projects(omero, query=query)
@@ -159,7 +210,7 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
             return self._count_images(omero, path_parts[1], query=query)
         return 0
 
-    def _count_projects(self, conn: BlitzGateway, query: Optional[str] = None) -> int:
+    def _count_projects(self, conn: BlitzGateway, query: str | None = None) -> int:
         """Count all projects using efficient HQL query."""
         query_service = conn.getQueryService()
         params = omero.sys.ParametersI()
@@ -170,7 +221,7 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         result = query_service.projection(hql, params, conn.SERVICE_OPTS)
         return result[0][0].val if result else 0
 
-    def _count_datasets(self, conn: BlitzGateway, project_id_str: str, query: Optional[str] = None) -> int:
+    def _count_datasets(self, conn: BlitzGateway, project_id_str: str, query: str | None = None) -> int:
         """Count datasets in a project using efficient HQL query."""
         if not project_id_str.startswith("project_"):
             return 0
@@ -188,7 +239,7 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         result = query_service.projection(hql, params, conn.SERVICE_OPTS)
         return result[0][0].val if result else 0
 
-    def _count_images(self, conn: BlitzGateway, dataset_id_str: str, query: Optional[str] = None) -> int:
+    def _count_images(self, conn: BlitzGateway, dataset_id_str: str, query: str | None = None) -> int:
         """Count images in a dataset using efficient HQL query."""
         if not dataset_id_str.startswith("dataset_"):
             return 0
@@ -209,9 +260,9 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
     def _list_projects(
         self,
         conn: BlitzGateway,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        query: Optional[str] = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        query: str | None = None,
     ) -> list[AnyRemoteEntry]:
         """List all projects as directories at root level."""
         if query:
@@ -236,8 +287,8 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         self,
         conn: BlitzGateway,
         query: str,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[AnyRemoteEntry]:
         """List projects matching query using HQL for server-side filtering."""
         query_service = conn.getQueryService()
@@ -266,9 +317,9 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         self,
         conn: BlitzGateway,
         project_id_str: str,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        query: Optional[str] = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        query: str | None = None,
     ) -> list[AnyRemoteEntry]:
         """List datasets within a project."""
         if not project_id_str.startswith("project_"):
@@ -305,8 +356,8 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         project_id_str: str,
         project_id: int,
         query: str,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[AnyRemoteEntry]:
         """List datasets matching query using HQL for server-side filtering."""
         query_service = conn.getQueryService()
@@ -341,9 +392,9 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         conn: BlitzGateway,
         project_id_str: str,
         dataset_id_str: str,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        query: Optional[str] = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        query: str | None = None,
     ) -> list[AnyRemoteEntry]:
         """List images within a dataset."""
         if not dataset_id_str.startswith("dataset_"):
@@ -375,8 +426,8 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         dataset_id_str: str,
         dataset_id: int,
         query: str,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[AnyRemoteEntry]:
         """List images matching query using HQL for server-side filtering."""
         query_service = conn.getQueryService()
@@ -399,7 +450,7 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
             results.append(self._create_remote_file_for_image(image, image_path))
         return results
 
-    def _build_pagination_opts(self, limit: Optional[int] = None, offset: Optional[int] = None) -> dict[str, int]:
+    def _build_pagination_opts(self, limit: int | None = None, offset: int | None = None) -> dict[str, int]:
         """Build OMERO pagination options dictionary."""
         opts: dict[str, int] = {}
         if limit is not None:
@@ -494,7 +545,7 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
         if self._try_download_original_file(image, native_path):
             return
 
-        self._export_pixel_data(image, native_path)
+        self._export_as_tiff(image, native_path)
 
     def _try_download_original_file(self, image, native_path: str) -> bool:
         """Attempt to download the original imported file. Returns True if successful.
@@ -522,41 +573,45 @@ class OmeroFileSource(BaseFilesSource[OmeroFileSourceTemplateConfiguration, Omer
             for chunk in orig_file.getFileInChunks():
                 f.write(chunk)
 
-    def _export_pixel_data(self, image, native_path: str):
-        """Export pixel data as TIFF or fallback to thumbnail."""
-        try:
-            self._export_as_tiff(image, native_path)
-        except Exception:
-            self._export_as_thumbnail(image, native_path)
-
     def _export_as_tiff(self, image, native_path: str):
-        """Export all Z-planes of the image as a multi-page TIFF.
+        """Export all Z-planes and channels of the image as a multi-dimensional OME-TIFF.
 
-        Exports the first channel (C=0) and first timepoint (T=0) across all Z-planes.
-        This preserves the full Z-stack for 3D analysis while keeping the export manageable.
+        Exports all channels (C) and Z-planes at the first timepoint (T=0).
+        Uses generator-based streaming to minimize memory usage - the full shape
+        is declared upfront but planes are fetched and written one at a time.
+
+        Memory usage: O(Y*X) per plane instead of O(Z*C*Y*X) for entire image.
         """
+        if tifffile is None:
+            raise ImportError("The tifffile library is required to export OMERO images as TIFF. Please install it.")
 
         pixels = image.getPrimaryPixels()
         size_z = image.getSizeZ()
+        size_c = image.getSizeC()
+        size_y = image.getSizeY()
+        size_x = image.getSizeX()
 
-        planes = []
-        for z in range(size_z):
-            plane_data = pixels.getPlane(z, 0, 0)
-            planes.append(PILImage.fromarray(plane_data))
+        # Get dtype from first plane sample
+        first_plane = pixels.getPlane(0, 0, 0)
+        dtype = first_plane.dtype
 
-        if planes:
-            planes[0].save(
-                native_path,
-                format="TIFF",
-                save_all=True,
-                append_images=planes[1:] if len(planes) > 1 else [],
+        def plane_generator():
+            """Generator yielding 2D planes in ZCYX order (Z outer, C inner)."""
+            for z in range(size_z):
+                for c in range(size_c):
+                    if z == 0 and c == 0:
+                        # First plane already fetched for dtype detection
+                        yield first_plane
+                    else:
+                        yield pixels.getPlane(z, c, 0)
+
+        with tifffile.TiffWriter(native_path, bigtiff=True, imagej=True) as tif:
+            tif.write(
+                data=plane_generator(),
+                shape=(size_z, size_c, size_y, size_x),
+                dtype=dtype,
+                metadata={"axes": "ZCYX"},
             )
-
-    def _export_as_thumbnail(self, image, native_path: str):
-        """Export the rendered thumbnail as final fallback."""
-        img_data = image.getThumbnail()
-        with open(native_path, "wb") as f:
-            f.write(img_data)
 
     def _write_from(
         self, target_path: str, native_path: str, context: FilesSourceRuntimeContext[OmeroFileSourceConfiguration]

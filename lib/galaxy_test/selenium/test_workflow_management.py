@@ -30,12 +30,25 @@ class TestWorkflowManagement(SeleniumTestCase, TestsGalaxyPagers, UsesWorkflowAs
     @selenium_test
     def test_import_accessibility(self):
         self.workflow_index_open()
-        self.workflow_index_click_import()
         workflows = self.components.workflows
+
+        self.workflow_index_click_import()
+        # Clicking the method card auto-navigates to the upload step
+        workflows.import_file_link.wait_for_and_click()
         workflows.import_file.assert_no_axe_violations_with_impact_of_at_least("moderate")
+
+        self.navigate_to_workflows_import()
+        # Clicking the TRS card auto-navigates to the TRS method selection step
+        workflows.import_trs_link.wait_for_and_click()
+        # Clicking the search card auto-navigates to the TRS search form
         workflows.import_trs_search_link.wait_for_and_click()
         # moderate violation relating to header ordering
         workflows.import_trs_search.assert_no_axe_violations_with_impact_of_at_least("serious")
+
+        self.navigate_to_workflows_import()
+        # Clicking the TRS card auto-navigates to the TRS method selection step
+        workflows.import_trs_link.wait_for_and_click()
+        # Clicking the TRS ID card auto-navigates to the TRS ID form
         workflows.import_trs_id_link.wait_for_and_click()
         # ditto - moderate violation relating to header ordering
         workflows.import_trs_id.assert_no_axe_violations_with_impact_of_at_least("serious")

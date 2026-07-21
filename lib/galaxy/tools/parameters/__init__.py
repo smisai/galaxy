@@ -6,9 +6,6 @@ from json import dumps
 from typing import (
     Any,
     cast,
-    Optional,
-    Tuple,
-    Union,
 )
 
 from boltons.iterutils import remap
@@ -39,7 +36,7 @@ from .grouping import (
 )
 from .workflow_utils import (
     is_runtime_value,
-    NO_REPLACEMENT,
+    NoReplacement,
     runtime_to_json,
 )
 from .wrapped import flat_to_nested_state
@@ -58,7 +55,7 @@ REPLACE_ON_TRUTHY = object()
 # Some tools use the code tag and access the code base, expecting certain tool parameters to be available here.
 __all__ = ("DataCollectionToolParameter", "DataToolParameter", "SelectToolParameter")
 
-ToolInputsT = dict[str, Union[Group, ToolParameter]]
+ToolInputsT = dict[str, Group | ToolParameter]
 
 
 def visit_input_values(
@@ -185,33 +182,33 @@ def visit_input_values(
         new_value = callback(**args)
 
         # is this good enough ? feels very ugh
-        if new_value == [no_replacement_value]:
+        if isinstance(new_value, list) and len(new_value) == 1 and isinstance(new_value[0], NoReplacement):
             # Single unspecified value in multiple="true" input with a single null input, pretend it's a singular value
             new_value = no_replacement_value
         if isinstance(new_value, list):
             # Maybe mixed input, I guess tool defaults don't really make sense here ?
             # Would e.g. be default dataset in multiple="true" input, you wouldn't expect the default to be inserted
             # if other inputs are connected and provided.
-            new_value = [item if not item == no_replacement_value else None for item in new_value]
+            new_value = [item if not isinstance(item, NoReplacement) else None for item in new_value]
 
         if no_replacement_value is REPLACE_ON_TRUTHY:
             replace = bool(new_value)
         else:
-            replace = new_value != no_replacement_value
+            replace = not isinstance(new_value, NoReplacement) and new_value != no_replacement_value
         if replace:
             input_values[input.name] = new_value
         elif replace_optional_connections:
-            # Only used in workflow context
-            has_default = hasattr(input, "value")
-            if new_value is value is NO_REPLACEMENT or is_runtime_value(value):
-                # NO_REPLACEMENT means value was connected but left unspecified
-                if has_default:
-                    # Use default if we have one
+            # Only used in workflow context.
+            # If we reach here the callback returned no_replacement_value,
+            # meaning the connected step did not produce a value (e.g. an
+            # omitted optional parameter_input).  Only replace sentinel
+            # values (ConnectedValue, RuntimeValue, NO_REPLACEMENT) with
+            # the tool parameter's own default — preserve valid tool-state
+            # values for unconnected inputs.
+            if isinstance(value, NoReplacement) or is_runtime_value(value):
+                if hasattr(input, "value"):
                     input_values[input.name] = input.value
                 else:
-                    # Should fail if input is not optional and does not have default value
-                    # Effectively however depends on parameter implementation.
-                    # We might want to raise an exception here, instead of depending on a tool parameter value error.
                     input_values[input.name] = None
 
     def get_current_case(input, input_values):
@@ -229,6 +226,7 @@ def visit_input_values(
     payload = {
         "context": context,
         "no_replacement_value": no_replacement_value,
+        "replace_optional_connections": replace_optional_connections,
         "allow_case_inference": allow_case_inference,
         "unset_value": unset_value,
     }
@@ -290,7 +288,7 @@ def visit_input_values(
 
 def check_param(
     trans, param: ToolParameter, incoming_value, param_values, simple_errors: bool = True
-) -> Tuple[Any, Union[str, ValueError, None]]:
+) -> tuple[Any, str | ValueError | None]:
     """
     Check the value of a single parameter `param`. The value in
     `incoming_value` is converted from its HTML encoding and validated.
@@ -299,7 +297,7 @@ def check_param(
     when dealing with grouping scenarios).
     """
     value = incoming_value
-    error: Union[str, ValueError, None] = None
+    error: str | ValueError | None = None
     try:
         if trans.workflow_building_mode:
             if is_runtime_value(value):
@@ -334,7 +332,7 @@ def params_to_strings(
     app,
     nested=False,
     use_security=False,
-) -> Union[ToolStateDumpedToJsonT, ToolStateDumpedToJsonInternalT, ToolStateDumpedToStringsT]:
+) -> ToolStateDumpedToJsonT | ToolStateDumpedToJsonInternalT | ToolStateDumpedToStringsT:
     """
     Convert a dictionary of parameter values to a dictionary of strings
     suitable for persisting. The `value_to_basic` method of each parameter
@@ -354,7 +352,7 @@ def params_to_strings(
     return rval
 
 
-def params_from_strings(params: dict[str, Union[Group, ToolParameter]], param_values, app, ignore_errors=False) -> dict:
+def params_from_strings(params: dict[str, Group | ToolParameter], param_values, app, ignore_errors=False) -> dict:
     """
     Convert a dictionary of strings as produced by `params_to_strings`
     back into parameter values (decode the json representation and then
@@ -430,7 +428,7 @@ def populate_state(
     inputs: ToolInputsT,
     incoming: ToolStateJobInstanceT,
     state: ToolStateJobInstancePopulatedT,
-    errors: Optional[ParameterValidationErrorsT] = None,
+    errors: ParameterValidationErrorsT | None = None,
     context=None,
     check=True,
     simple_errors=True,

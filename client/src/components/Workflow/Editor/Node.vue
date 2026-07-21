@@ -26,7 +26,7 @@
                 <LoadingSpan v-if="isLoading" spinner-only />
                 <BButton
                     v-if="credentials.length > 0"
-                    v-b-tooltip.hover
+                    v-g-tooltip.hover
                     class="node-credentials py-0 inline-icon-button"
                     variant="primary"
                     size="sm"
@@ -36,7 +36,7 @@
                 </BButton>
                 <b-button
                     v-if="!readonly"
-                    v-b-tooltip.hover
+                    v-g-tooltip.hover
                     class="node-clone py-0"
                     variant="primary"
                     size="sm"
@@ -47,7 +47,7 @@
                 </b-button>
                 <b-button
                     v-if="!readonly"
-                    v-b-tooltip.hover
+                    v-g-tooltip.hover
                     class="node-destroy py-0"
                     variant="primary"
                     size="sm"
@@ -81,11 +81,11 @@
                 </b-popover>
             </b-button-group>
             <i :class="iconClass" />
-            <span v-if="step.when" v-b-tooltip.hover title="This step is conditionally executed.">
+            <span v-if="step.when" v-g-tooltip.hover title="This step is conditionally executed.">
                 <FontAwesomeIcon :icon="faCodeBranch" />
             </span>
             <span
-                v-b-tooltip.hover
+                v-g-tooltip.hover
                 title="Index of the step in the workflow run form. Steps are ordered by distance to the upper-left corner of the window; inputs are listed first."
                 >{{ step.id + 1 }}:
             </span>
@@ -173,7 +173,12 @@ import type { GraphStep } from "@/composables/useInvocationGraph";
 import { useWorkflowStores } from "@/composables/workflowStores";
 import type { TerminalPosition, XYPosition } from "@/stores/workflowEditorStateStore";
 import { useWorkflowNodeInspectorStore } from "@/stores/workflowNodeInspectorStore";
-import type { InputTerminalSource, OutputTerminalSource, Step } from "@/stores/workflowStepStore";
+import {
+    getCombinedStepInputs,
+    type InputTerminalSource,
+    type OutputTerminalSource,
+    type Step,
+} from "@/stores/workflowStepStore";
 import { composedPartialPath, isClickable } from "@/utils/dom";
 
 import { isWorkflowInput } from "../constants";
@@ -207,6 +212,7 @@ const props = defineProps({
     isInvocation: { type: Boolean, default: false },
     readonly: { type: Boolean, default: false },
     populatedInputs: { type: Boolean, default: false },
+    isOutOfFocus: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -270,6 +276,7 @@ const classes = computed(() => {
         "node-highlight": props.highlight || isActive.value,
         "is-active": isActive.value,
         "node-multi-selected": stateStore.getStepMultiSelected(props.id),
+        "node-not-in-focus": props.isOutOfFocus && !isActive.value,
     };
 });
 
@@ -290,8 +297,9 @@ const headerClass = computed(() => {
 
 const inputs = computed(() => {
     const connections = connectionStore.getConnectionsForStep(props.id);
-    const extraStepInputs = stepStore.getStepExtraInputs(props.id);
-    const stepInputs = [...extraStepInputs, ...(props.step.inputs || [])];
+    // Use getCombinedStepInputs for Step objects, fall back to direct access for GraphStep
+    const step = stepStore.getStep(props.id);
+    const stepInputs = step ? getCombinedStepInputs(step, stepStore) : [...(props.step.inputs || [])];
     const unknownInputs: string[] = [];
     connections.forEach((connection) => {
         if (connection.input.stepId == props.id && !stepInputs.find((input) => input.name === connection.input.name)) {
@@ -440,6 +448,12 @@ function toggleSelected() {
     border: solid $brand-primary 1px;
 
     $multi-selected: lighten($brand-info, 20%);
+
+    transition: opacity 0.2s ease;
+
+    &.node-not-in-focus {
+        opacity: 0.7;
+    }
 
     &.node-multi-selected {
         box-shadow:

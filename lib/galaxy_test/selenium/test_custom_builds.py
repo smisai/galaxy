@@ -2,7 +2,6 @@ from selenium.webdriver.common.by import By
 
 from .framework import (
     retry_assertion_during_transitions,
-    selenium_only,
     selenium_test,
     SharedStateSeleniumTestCase,
 )
@@ -15,7 +14,6 @@ class TestCustomBuilds(SharedStateSeleniumTestCase):
     build_key1: str
     build_key2: str
 
-    @selenium_only("Not yet migrated to support Playwright backend")
     @selenium_test
     def test_build_add(self):
         self._login()
@@ -23,7 +21,6 @@ class TestCustomBuilds(SharedStateSeleniumTestCase):
         self.add_custom_build(self.build_name1, self.build_key1)
         self.assert_custom_builds_in_grid([self.build_name1])
 
-    @selenium_only("Not yet migrated to support Playwright backend")
     @selenium_test
     def test_build_delete(self):
         self._login()
@@ -53,11 +50,8 @@ class TestCustomBuilds(SharedStateSeleniumTestCase):
         key_input = self.wait_for_selector('input[id="id"]')
         key_input.send_keys(build_key)
 
-        len_type_select = self.wait_for_selector('select[id="type"]')
-        len_type_select.click()
-
-        option = self.wait_for_selector_clickable('option[value="text"]')
-        option.click()
+        self.wait_for_selector('select[id="type"]')
+        self.select_by_value(("css selector", 'select[id="type"]'), "text")
         content_area = self.wait_for_and_click_selector('textarea[id="len-file-text-area"]')
         content_area.send_keys("content")
 
@@ -65,12 +59,12 @@ class TestCustomBuilds(SharedStateSeleniumTestCase):
 
     def delete_custom_build(self, build_name):
         delete_button = None
-        grid = self.wait_for_selector("table.grid > tbody")
-        for row in grid.find_elements(By.TAG_NAME, "tr"):
+        custom_builds_table = self.wait_for_selector(".g-table > tbody")
+        for row in custom_builds_table.find_elements(By.TAG_NAME, "tr"):
             td = row.find_elements(By.TAG_NAME, "td")
             name = td[0].text
             if name == build_name:
-                delete_button = td[3].find_element(By.CSS_SELECTOR, ".fa-trash-o")
+                delete_button = td[3].find_element(By.CSS_SELECTOR, "button[data-title='Delete build']")
                 break
 
         if delete_button is None:
@@ -81,8 +75,8 @@ class TestCustomBuilds(SharedStateSeleniumTestCase):
     def get_custom_builds(self):
         self.sleep_for(self.wait_types.UX_RENDER)
         builds = []
-        grid = self.wait_for_selector("table.grid > tbody")
-        for row in grid.find_elements(By.TAG_NAME, "tr"):
+        custom_builds_table = self.wait_for_selector(".g-table > tbody")
+        for row in custom_builds_table.find_elements(By.TAG_NAME, "tr"):
             name = row.find_elements(By.TAG_NAME, "td")[0].text
             builds.append(name)
         return builds

@@ -1,11 +1,9 @@
 # Contains parameters that are used in Display Applications
 import mimetypes
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import (
-    Callable,
-    Optional,
     TYPE_CHECKING,
-    Union,
 )
 from urllib.parse import quote_plus
 
@@ -23,7 +21,7 @@ DEFAULT_DATASET_NAME = "dataset"
 class DisplayApplicationParameter:
     """Abstract Class for Display Application Parameters"""
 
-    type: Optional[str] = None
+    type: str | None = None
 
     @classmethod
     def from_elem(cls, elem, link):
@@ -72,7 +70,7 @@ class DatasetLikeObject:
     state: DatasetState
     extension: str
     name: str
-    dbkey: Optional[str]
+    dbkey: str | None
     datatype: Data
 
 
@@ -116,7 +114,7 @@ class DisplayApplicationDataParameter(DisplayApplicationParameter):
             )
         return None
 
-    def _get_dataset_like_object(self, other_values) -> Optional[Union[DatasetLikeObject, DatasetInstance]]:
+    def _get_dataset_like_object(self, other_values) -> DatasetLikeObject | DatasetInstance | None:
         data = other_values.get(self.dataset, None)
         assert data, "Base dataset could not be found in values provided to DisplayApplicationDataParameter"
         if isinstance(data, DisplayDataValueWrapper):
@@ -256,19 +254,17 @@ class DisplayParameterValueWrapper:
         base_url = self.trans.request.base
         if self.parameter.strip_https and base_url[:5].lower() == "https":
             base_url = f"http{base_url[5:]}"
-        return "{}{}".format(
-            base_url,
-            self.trans.app.url_for(
-                controller="dataset",
-                action="display_application",
-                dataset_id=self._dataset_hash,
-                user_id=self._user_hash,
-                app_name=quote_plus(self.parameter.link.display_application.id),
-                link_name=quote_plus(self.parameter.link.id),
-                app_action=self.action_name,
-                action_param=self._url,
-            ),
+        path = self.trans.app.url_for(
+            controller="dataset",
+            action="display_application",
+            dataset_id=self._dataset_hash,
+            user_id=self._user_hash,
+            app_name=quote_plus(self.parameter.link.display_application.id),
+            link_name=quote_plus(self.parameter.link.id),
+            app_action=self.action_name,
+            action_param=self._url,
         )
+        return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
     @property
     def action_name(self):

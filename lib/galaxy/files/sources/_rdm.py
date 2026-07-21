@@ -2,8 +2,6 @@ import logging
 from typing import (
     Any,
     NamedTuple,
-    Optional,
-    Union,
 )
 
 from galaxy.files.models import (
@@ -23,13 +21,13 @@ log = logging.getLogger(__name__)
 
 
 class RDMFileSourceTemplateConfiguration(BaseFileSourceTemplateConfiguration):
-    token: Union[str, TemplateExpansion]
-    public_name: Union[str, TemplateExpansion]
+    token: str | TemplateExpansion | None = None
+    public_name: str | TemplateExpansion | None = None
 
 
 class RDMFileSourceConfiguration(BaseFileSourceConfiguration):
-    token: str
-    public_name: str
+    token: str | None = None
+    public_name: str | None = None
 
 
 class ContainerAndFileIdentifier(NamedTuple):
@@ -51,7 +49,7 @@ class RDMRepositoryInteractor:
     """
 
     def __init__(self, repository_url: str, plugin: "RDMFilesSource"):
-        self._repository_url = repository_url
+        self._repository_url = self._strip_last_slash(repository_url)
         self._plugin = plugin
 
     @property
@@ -67,7 +65,7 @@ class RDMRepositoryInteractor:
         """
         return self._repository_url
 
-    def to_plugin_uri(self, container_id: str, filename: Optional[str] = None) -> str:
+    def to_plugin_uri(self, container_id: str, filename: str | None = None) -> str:
         """Creates a valid plugin URI to reference the given container_id.
 
         If a filename is provided, the URI will reference the specific file in the container."""
@@ -77,10 +75,10 @@ class RDMRepositoryInteractor:
         self,
         context: FilesSourceRuntimeContext[RDMFileSourceConfiguration],
         write_intent: bool,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        query: Optional[str] = None,
-        sort_by: Optional[str] = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        query: str | None = None,
+        sort_by: str | None = None,
     ) -> tuple[list[RemoteDirectory], int]:
         """Returns the list of file containers in the repository and the total count containers.
 
@@ -93,7 +91,7 @@ class RDMRepositoryInteractor:
         context: FilesSourceRuntimeContext[RDMFileSourceConfiguration],
         container_id: str,
         writeable: bool,
-        query: Optional[str] = None,
+        query: str | None = None,
     ) -> list[RemoteFile]:
         """Returns the list of files of a file container.
 
@@ -138,6 +136,12 @@ class RDMRepositoryInteractor:
         """
         raise NotImplementedError()
 
+    def _strip_last_slash(self, url: str) -> str:
+        """Utility method to strip the last slash from a URL if present."""
+        if url.endswith("/"):
+            return url[:-1]
+        return url
+
 
 class RDMFilesSource(BaseFilesSource[RDMFileSourceTemplateConfiguration, RDMFileSourceConfiguration]):
     """Base class for Research Data Management (RDM) file sources.
@@ -168,7 +172,7 @@ class RDMFilesSource(BaseFilesSource[RDMFileSourceTemplateConfiguration, RDMFile
     def repository(self) -> RDMRepositoryInteractor:
         return self._repository_interactor
 
-    def get_url(self) -> Optional[str]:
+    def get_url(self) -> str | None:
         return self.template_config.url
 
     def get_repository_interactor(self, repository_url: str) -> RDMRepositoryInteractor:
@@ -188,7 +192,7 @@ class RDMFilesSource(BaseFilesSource[RDMFileSourceTemplateConfiguration, RDMFile
     def get_container_id_from_path(self, source_path: str) -> str:
         raise NotImplementedError()
 
-    def get_authorization_token(self, context: FilesSourceRuntimeContext[RDMFileSourceConfiguration]) -> Optional[str]:
+    def get_authorization_token(self, context: FilesSourceRuntimeContext[RDMFileSourceConfiguration]) -> str | None:
         return context.config.token
 
     def get_public_name(self, context: FilesSourceRuntimeContext[RDMFileSourceConfiguration]) -> str:

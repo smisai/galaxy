@@ -8,7 +8,6 @@ from typing import (
     cast,
     NamedTuple,
     Optional,
-    Union,
 )
 
 from galaxy.files import (
@@ -30,6 +29,7 @@ from galaxy.model import (
 )
 from galaxy.util import safe_makedirs
 from galaxy.util.dictifiable import UsesDictVisibleKeys
+from galaxy.util.path import StrPath
 
 TOOL_PROVIDED_JOB_METADATA_FILE = "galaxy.json"
 TOOL_PROVIDED_JOB_METADATA_KEYS = ["name", "info", "dbkey", "created_from_basename"]
@@ -48,8 +48,8 @@ class JobOutput(NamedTuple):
 class JobOutputs(threading.local):
     def __init__(self) -> None:
         super().__init__()
-        self.output_hdas_and_paths: Optional[OutputHdasAndType] = None
-        self.output_paths: Optional[OutputPaths] = None
+        self.output_hdas_and_paths: OutputHdasAndType | None = None
+        self.output_paths: OutputPaths | None = None
 
     @property
     def populated(self) -> bool:
@@ -104,13 +104,13 @@ class JobIO(UsesDictVisibleKeys):
         len_file_path: str,
         builds_file_path: str,
         check_job_script_integrity: bool,
-        check_job_script_integrity_count: int,
-        check_job_script_integrity_sleep: float,
+        check_job_script_integrity_count: int | None,
+        check_job_script_integrity_sleep: float | None,
         file_sources_dict: dict[str, Any],
-        user_context: Union[FileSourcesUserContext, dict[str, Any]],
-        tool_source: Optional[str] = None,
+        user_context: FileSourcesUserContext | dict[str, Any],
+        tool_source: str | None = None,
         tool_source_class: Optional["str"] = "XmlToolSource",
-        tool_dir: Optional[str] = None,
+        tool_dir: StrPath | None = None,
         is_task: bool = False,
     ):
         user_context_instance: FileSourcesUserContext
@@ -143,7 +143,7 @@ class JobIO(UsesDictVisibleKeys):
         self.tool_source = tool_source
         self.tool_source_class = tool_source_class
         self.job_outputs = JobOutputs()
-        self._dataset_path_rewriter: Optional[DatasetPathRewriter] = None
+        self._dataset_path_rewriter: DatasetPathRewriter | None = None
 
     @property
     def job(self) -> Job:
@@ -156,7 +156,7 @@ class JobIO(UsesDictVisibleKeys):
             # Drop in 24.0
             io_dict.pop("model_class", None)
         job_id = io_dict.pop("job_id")
-        job = sa_session.query(Job).get(job_id)
+        job = sa_session.get(Job, job_id)
         return cls(sa_session=sa_session, job=job, **io_dict)
 
     @classmethod
@@ -216,7 +216,7 @@ class JobIO(UsesDictVisibleKeys):
         return filenames
 
     def get_input_datasets(
-        self, materialized_objects: Optional[dict[str, DeferrableObjectsT]] = None
+        self, materialized_objects: dict[str, DeferrableObjectsT] | None = None
     ) -> list[DatasetInstance]:
         job = self.job
         datasets: list[DatasetInstance] = []
@@ -235,7 +235,7 @@ class JobIO(UsesDictVisibleKeys):
             filenames.extend(self.get_input_dataset_fnames(ds))
         return filenames
 
-    def get_input_paths(self, materialized_objects: Optional[dict[str, DeferrableObjectsT]]) -> list[DatasetPath]:
+    def get_input_paths(self, materialized_objects: dict[str, DeferrableObjectsT] | None) -> list[DatasetPath]:
         paths = []
         for ds in self.get_input_datasets(materialized_objects):
             paths.append(self.get_input_path(ds))
@@ -244,6 +244,7 @@ class JobIO(UsesDictVisibleKeys):
     def get_input_path(self, dataset: DatasetInstance) -> DatasetPath:
         real_path = dataset.get_file_name()
         false_path = self.dataset_path_rewriter.rewrite_dataset_path(dataset, "input")
+        assert dataset.dataset is not None
         return DatasetPath(
             dataset.dataset.id,
             real_path=real_path,
@@ -289,6 +290,7 @@ class JobIO(UsesDictVisibleKeys):
                 with open(da_false_path, "ab"):
                     pass
             real_path = da.dataset.get_file_name(sync_cache=False)
+            assert da.dataset.dataset is not None
             false_extra_files_path = os.path.join(
                 os.path.dirname(da_false_path or real_path), da.dataset.dataset.extra_files_path_name
             )
@@ -310,7 +312,7 @@ class JobIO(UsesDictVisibleKeys):
 
         self.job_outputs.set_job_outputs(job_outputs)
 
-    def get_output_file_id(self, file: str) -> Optional[int]:
+    def get_output_file_id(self, file: str) -> int | None:
         for dp in self.output_paths:
             if self.outputs_to_working_directory and os.path.basename(dp.false_path) == file:
                 return dp.dataset_id

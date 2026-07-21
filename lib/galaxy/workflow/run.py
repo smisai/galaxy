@@ -5,7 +5,6 @@ from typing import (
     Any,
     Optional,
     TYPE_CHECKING,
-    Union,
 )
 
 from boltons.iterutils import get_path
@@ -76,7 +75,7 @@ def __invoke(
     trans: "WorkRequestContext",
     workflow: "Workflow",
     workflow_run_config: WorkflowRunConfig,
-    workflow_invocation: Optional[WorkflowInvocation] = None,
+    workflow_invocation: WorkflowInvocation | None = None,
     populate_state: bool = False,
 ) -> tuple[WorkflowOutputsType, WorkflowInvocation]:
     """Run the supplied workflow in the supplied target_history."""
@@ -129,7 +128,7 @@ def queue_invoke(
     trans: "GalaxyWebTransaction",
     workflow: "Workflow",
     workflow_run_config: WorkflowRunConfig,
-    request_params: Optional[dict[str, Any]] = None,
+    request_params: dict[str, Any] | None = None,
     populate_state: bool = True,
     flush: bool = True,
 ) -> WorkflowInvocation:
@@ -159,7 +158,7 @@ class WorkflowInvoker:
         trans: "WorkRequestContext",
         workflow: "Workflow",
         workflow_run_config: WorkflowRunConfig,
-        workflow_invocation: Optional[WorkflowInvocation] = None,
+        workflow_invocation: WorkflowInvocation | None = None,
         progress: Optional["WorkflowProgress"] = None,
     ) -> None:
         self.trans = trans
@@ -285,6 +284,15 @@ class WorkflowInvoker:
                     step.log_str(),
                     failure_reason,
                 )
+                if isinstance(e, modules.FailWorkflowEvaluation):
+                    # If this step is a subworkflow, prepend its ID to the path
+                    if step.type == "subworkflow":
+                        error_dict = e.why.model_dump()
+                        current_path = error_dict.get("workflow_step_index_path") or []
+                        current_path.append(step.order_index)
+                        error_dict["workflow_step_index_path"] = current_path
+                        error_class = type(e.why)
+                        e.why = error_class(**error_dict)
                 if isinstance(e, MessageException):
                     # This is the highest level at which we can inject the step id
                     # to provide some more context to the exception.
@@ -352,7 +360,7 @@ class WorkflowInvoker:
                     )
                 )
 
-    def _invoke_step(self, invocation_step: WorkflowInvocationStep) -> Optional[bool]:
+    def _invoke_step(self, invocation_step: WorkflowInvocationStep) -> bool | None:
         assert invocation_step.workflow_step.module
         incomplete_or_none = invocation_step.workflow_step.module.execute(
             self.trans,
@@ -389,7 +397,7 @@ class WorkflowProgress:
         jobs_per_scheduling_iteration: int = -1,
         copy_inputs_to_history: bool = False,
         use_cached_job: bool = False,
-        replacement_dict: Optional[dict[str, str]] = None,
+        replacement_dict: dict[str, str] | None = None,
         subworkflow_collection_info=None,
         when_values=None,
     ) -> None:
@@ -409,7 +417,7 @@ class WorkflowProgress:
         self.when_values = when_values
 
     @property
-    def maximum_jobs_to_schedule_or_none(self) -> Optional[int]:
+    def maximum_jobs_to_schedule_or_none(self) -> int | None:
         if self.jobs_per_scheduling_iteration > 0:
             return self.jobs_per_scheduling_iteration - self.jobs_scheduled_this_iteration
         else:
@@ -420,7 +428,7 @@ class WorkflowProgress:
 
     def remaining_steps(
         self,
-    ) -> list[tuple["WorkflowStep", Optional[WorkflowInvocationStep]]]:
+    ) -> list[tuple["WorkflowStep", WorkflowInvocationStep | None]]:
         # Previously computed and persisted step states.
         step_states = self.workflow_invocation.step_states_by_step_id()
         steps = self.workflow_invocation.workflow.steps
@@ -451,12 +459,9 @@ class WorkflowProgress:
         return remaining_steps
 
     def replacement_for_input(self, trans, step: "WorkflowStep", input_dict: dict[str, Any]):
-        replacement: Union[
-            NoReplacement,
-            model.DatasetCollectionInstance,
-            list[model.DatasetCollectionInstance],
-            HistoryItem,
-        ] = NO_REPLACEMENT
+        replacement: (
+            NoReplacement | model.DatasetCollectionInstance | list[model.DatasetCollectionInstance] | HistoryItem
+        ) = NO_REPLACEMENT
         prefixed_name = input_dict["name"]
         multiple = input_dict["multiple"]
         is_data = input_dict["input_type"] in ["dataset", "dataset_collection"]
@@ -517,6 +522,8 @@ class WorkflowProgress:
                     dependent_workflow_step_id=output_step_id,
                 )
             )
+        if isinstance(replacement, NoReplacement):
+            return NO_REPLACEMENT
         if isinstance(replacement, MutableMapping) and replacement.get("__class__") == "NoReplacement":
             return NO_REPLACEMENT
         if isinstance(replacement, model.HistoryDatasetCollectionAssociation):
@@ -592,7 +599,7 @@ class WorkflowProgress:
     def set_outputs_for_input(
         self,
         invocation_step: WorkflowInvocationStep,
-        outputs: Optional[dict[str, Any]] = None,
+        outputs: dict[str, Any] | None = None,
         already_persisted: bool = False,
     ) -> None:
         step = invocation_step.workflow_step
@@ -622,12 +629,14 @@ class WorkflowProgress:
                 outputs["output"] = step.get_input_default_value(NO_REPLACEMENT)
 
         if step.label and step.type == "parameter_input" and "output" in outputs:
-            self.runtime_replacements[step.label] = str(outputs["output"])
+            output_value = outputs["output"]
+            if output_value is not NO_REPLACEMENT:
+                self.runtime_replacements[step.label] = str(output_value)
         invocation = invocation_step.workflow_invocation
         if not invocation.has_input_for_step(step.id):
             content = outputs.get("output", NO_REPLACEMENT)
             if content is not NO_REPLACEMENT:
-                log.info("ADDING INPUT FOR STEP %s: %s", step.id, content, exc_info=True)
+                log.debug("Adding input for step %s: %s", step.id, content)
                 invocation.add_input(content, step.id)
         self.set_step_outputs(invocation_step, outputs, already_persisted=already_persisted)
 
@@ -677,7 +686,7 @@ class WorkflowProgress:
             output = {"__class__": "NoReplacement"}
         self.workflow_invocation.add_output(workflow_output, step, output)
 
-    def mark_step_outputs_delayed(self, step: "WorkflowStep", why: Optional[str] = None) -> None:
+    def mark_step_outputs_delayed(self, step: "WorkflowStep", why: str | None = None) -> None:
         if why:
             message = f"Marking step {step.id} outputs of invocation {self.workflow_invocation.id} delayed ({why})"
             log.debug(message)
@@ -711,7 +720,13 @@ class WorkflowProgress:
         # Determine output value from inputs_by_step_id or default
         outputs = {}
         if step.id not in self.inputs_by_step_id:
-            outputs["output"] = step.get_input_default_value(NO_REPLACEMENT)
+            default_value = step.get_input_default_value(NO_REPLACEMENT)
+            # For parameter_input steps, unwrap {"src": "json", "value": X}
+            # dicts to just X — matching the unwrap logic in
+            # InputParameterModule.get_input_value().
+            if step.type == "parameter_input" and isinstance(default_value, dict):
+                default_value = default_value.get("value", default_value)
+            outputs["output"] = default_value
         else:
             outputs["output"] = self.inputs_by_step_id[step.id]
 
@@ -770,25 +785,33 @@ class WorkflowProgress:
                     break
 
             if not input_subworkflow_step.input_optional and not connection_found:
+                # Check if input has a default value (matching pattern from run_request.py).
+                # A required input can be disconnected if it has a default value.
+                # Use sentinel object to distinguish "no default" from "default is None/empty".
+                default_not_set = object()
+                default_value = input_subworkflow_step.get_input_default_value(default_not_set)
+                has_default = default_value is not default_not_set
 
-                if not input_connections:
-                    # TODO: Prevent this on import / runtime !
+                # Only raise error if there's no default value
+                if not has_default:
+                    if not input_connections:
+                        # TODO: Prevent this on import / runtime !
+                        raise modules.FailWorkflowEvaluation(
+                            InvocationUnexpectedFailure(
+                                reason=FailureReason.unexpected_failure,
+                                workflow_step_id=step.id,
+                                details="Subworkflow has disconnected required input.",
+                            )
+                        )
+
                     raise modules.FailWorkflowEvaluation(
-                        InvocationUnexpectedFailure(
-                            reason=FailureReason.unexpected_failure,
+                        InvocationFailureOutputNotFound(
+                            reason=FailureReason.output_not_found,
                             workflow_step_id=step.id,
-                            details="Subworkflow has disconnected required input.",
+                            output_name=input_connection.output_name,
+                            dependent_workflow_step_id=input_connection.output_step.id,
                         )
                     )
-
-                raise modules.FailWorkflowEvaluation(
-                    InvocationFailureOutputNotFound(
-                        reason=FailureReason.output_not_found,
-                        workflow_step_id=step.id,
-                        output_name=input_connection.output_name,
-                        dependent_workflow_step_id=input_connection.output_step.id,
-                    )
-                )
 
         return WorkflowProgress(
             subworkflow_invocation,

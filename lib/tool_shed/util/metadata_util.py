@@ -1,7 +1,6 @@
 import logging
 from operator import itemgetter
 from typing import (
-    Optional,
     TYPE_CHECKING,
 )
 
@@ -27,6 +26,24 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+def build_invalid_tools(metadata: dict) -> list:
+    """Transform raw invalid_tools metadata into a list of dicts with tool_config and error_message."""
+    raw_invalid_tools = metadata.get("invalid_tools", [])
+    invalid_tool_errors = metadata.get("invalid_tool_errors", {})
+    invalid_tools = []
+    for item in raw_invalid_tools:
+        if isinstance(item, str):
+            invalid_tools.append(
+                {
+                    "tool_config": item,
+                    "error_message": invalid_tool_errors.get(item, ""),
+                }
+            )
+        elif isinstance(item, dict):
+            invalid_tools.append(item)
+    return invalid_tools
+
+
 def get_all_dependencies(app: "ToolShedApp", metadata_entry, processed_dependency_links=None):
     processed_dependency_links = processed_dependency_links or []
     encoder = app.security.encode_id
@@ -47,7 +64,7 @@ def get_all_dependencies(app: "ToolShedApp", metadata_entry, processed_dependenc
         dependency_dict["repository"] = repository.to_dict(value_mapper=value_mapper)
         if dependency_metadata.includes_tools:
             dependency_dict["tools"] = dependency_metadata.metadata["tools"]
-        dependency_dict["invalid_tools"] = dependency_metadata.metadata.get("invalid_tools", [])
+        dependency_dict["invalid_tools"] = build_invalid_tools(dependency_metadata.metadata)
         dependency_dict["repository_dependencies"] = []
         if dependency_dict["includes_tool_dependencies"]:
             dependency_dict["tool_dependencies"] = repository.get_tool_dependencies(
@@ -250,7 +267,7 @@ def get_repository_dependency_tups_from_repository_metadata(
 
 def get_repository_metadata_by_changeset_revision(
     app: "ToolShedApp", id: str, changeset_revision: str
-) -> Optional[RepositoryMetadata]:
+) -> RepositoryMetadata | None:
     """Get metadata for a specified repository change set from the database."""
     decoded_id = app.security.decode_id(id)
     return repository_metadata_by_changeset_revision(app.model, decoded_id, changeset_revision)
@@ -258,7 +275,7 @@ def get_repository_metadata_by_changeset_revision(
 
 def repository_metadata_by_changeset_revision(
     model_mapping: "ToolShedModelMapping", id: int, changeset_revision: str
-) -> Optional[RepositoryMetadata]:
+) -> RepositoryMetadata | None:
     # Make sure there are no duplicate records, and return the single unique record for the changeset_revision.
     # Duplicate records were somehow created in the past.  The cause of this issue has been resolved, but we'll
     # leave this method as is for a while longer to ensure all duplicate records are removed.
