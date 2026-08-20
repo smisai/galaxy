@@ -241,12 +241,17 @@ from galaxy.util.sanitize_html import sanitize_html
 if TYPE_CHECKING:
     from sqlalchemy.sql.expression import BindParameter
 
+    from galaxy.managers.context import (
+        ProvidesAppContext,
+        ProvidesUserContext,
+    )
     from galaxy.objectstore import (
         BaseObjectStore,
         ObjectStorePopulator,
         QuotaSourceMap,
     )
     from galaxy.schema.invocation import InvocationMessageUnion
+    from galaxy.webapps.base.webapp import GalaxyWebTransaction
 
 log = logging.getLogger(__name__)
 
@@ -1307,6 +1312,20 @@ ON CONFLICT
 
     def attempt_create_private_role(self):
         session = required_object_session(self)
+        if self.id is not None:
+            # Two requests logging in the same user concurrently would each find no
+            # private role and each insert one; a user with more than one private role
+            # is in an inconsistent state that no code path can resolve. Take a row lock
+            # on the user so the loser of the race re-checks after the winner commits.
+            session.execute(select(User.id).where(User.id == self.id).with_for_update())
+            stmt = (
+                select(Role.id)
+                .join(UserRoleAssociation, Role.id == UserRoleAssociation.role_id)
+                .where(and_(UserRoleAssociation.user_id == self.id, Role.type == Role.types.PRIVATE))
+            )
+            if session.scalars(stmt).first() is not None:
+                session.commit()  # release the lock
+                return
         role = Role(type=Role.types.PRIVATE)
         assoc = UserRoleAssociation(self, role)
         session.add(assoc)
@@ -1662,6 +1681,7 @@ class Job(Base, JobLike, UsesCreateAndUpdateTime, Dictifiable, Serializable):
     destination_id: Mapped[str | None] = mapped_column(String(255))
     destination_params: Mapped[dict[str, Any] | None] = mapped_column(MutableJSONType)
     object_store_id: Mapped[str | None] = mapped_column(TrimmedString(255), index=True)
+    working_directory: Mapped[str | None] = mapped_column(String(1024))
     imported: Mapped[bool | None] = mapped_column(default=False, index=True)
     handler: Mapped[str | None] = mapped_column(TrimmedString(255), index=True)
     preferred_object_store_id: Mapped[str | None] = mapped_column(String(255))
@@ -2200,6 +2220,8 @@ class Job(Base, JobLike, UsesCreateAndUpdateTime, Dictifiable, Serializable):
             tool_uuid=self.dynamic_tool and self.dynamic_tool.uuid,
             user=self.user,
         )
+        assert tool is not None
+        tool = app.toolbox.materialize_tool(tool, reason="serialization")
         param_dict = tool.get_param_values(self, ignore_errors=ignore_errors)
         return param_dict
 
@@ -2592,6 +2614,8 @@ class Task(Base, JobLike, RepresentById):
         """
         param_dict = {p.name: p.value for p in self.job.parameters}
         tool = app.toolbox.get_tool(self.job.tool_id, tool_version=self.job.tool_version)
+        assert tool is not None
+        tool = app.toolbox.materialize_tool(tool, reason="serialization")
         param_dict = tool.params_from_strings(param_dict)
         return param_dict
 
@@ -5790,7 +5814,7 @@ class DatasetInstance(RepresentById, UsesCreateAndUpdateTime, _HasTable):
                     return item
         return None
 
-    def get_converted_dataset_deps(self, trans, target_ext, use_cached_job=False):
+    def get_converted_dataset_deps(self, trans: "ProvidesUserContext", target_ext, use_cached_job=False):
         """
         Returns dict of { "dependency" => HDA }
         """
@@ -5802,7 +5826,13 @@ class DatasetInstance(RepresentById, UsesCreateAndUpdateTime, _HasTable):
         return {dep: self.get_converted_dataset(trans, dep, use_cached_job=use_cached_job) for dep in depends_list}
 
     def get_converted_dataset(
-        self, trans, target_ext, target_context=None, history=None, include_errored=False, use_cached_job=False
+        self,
+        trans: "ProvidesUserContext",
+        target_ext,
+        target_context=None,
+        history=None,
+        include_errored=False,
+        use_cached_job=False,
     ):
         """
         Return converted dataset(s) if they exist, along with a dict of dependencies.
@@ -5897,7 +5927,7 @@ class DatasetInstance(RepresentById, UsesCreateAndUpdateTime, _HasTable):
         return format in self.get_converter_types()
 
     def find_conversion_destination(
-        self, accepted_formats: list[str], **kwd
+        self, accepted_formats: Iterable[Union[str, "Data"]], **kwd
     ) -> tuple[bool, str | None, Optional["DatasetInstance"]]:
         """Returns ( target_ext, existing converted dataset )"""
         return self.datatype.find_conversion_destination(self, accepted_formats, _get_datatypes_registry(), **kwd)
@@ -5992,10 +6022,10 @@ class DatasetInstance(RepresentById, UsesCreateAndUpdateTime, _HasTable):
             return creating_job_associations[0].job
         return None
 
-    def get_display_applications(self, trans):
+    def get_display_applications(self, trans: "GalaxyWebTransaction"):
         return self.datatype.get_display_applications_by_dataset(self, trans)
 
-    def get_datasources(self, trans):
+    def get_datasources(self, trans: "ProvidesUserContext"):
         """
         Returns datasources for dataset; if datasources are not available
         due to indexing, indexing is started. Return value is a dictionary
@@ -6011,25 +6041,19 @@ class DatasetInstance(RepresentById, UsesCreateAndUpdateTime, _HasTable):
                 msg = None
                 data_source = source_list
             else:
-                # Convert.
-                if isinstance(source_list, str):
-                    source_list = [source_list]
-
-                # Loop through sources until viable one is found.
-                for source in source_list:
-                    msg = self.convert_dataset(trans, source)
-                    # No message or PENDING means that source is viable. No
-                    # message indicates conversion was done and is successful.
-                    if not msg or msg == self.conversion_messages.PENDING:
-                        data_source = source
-                        break
+                # Convert. Each data_sources entry names a single source.
+                msg = self.convert_dataset(trans, source_list)
+                # No message or PENDING means that source is viable. No
+                # message indicates conversion was done and is successful.
+                if not msg or msg == self.conversion_messages.PENDING:
+                    data_source = source_list
 
             # Store msg.
             data_sources_dict[source_type] = {"name": data_source, "message": msg}
 
         return data_sources_dict
 
-    def convert_dataset(self, trans, target_type):
+    def convert_dataset(self, trans: "ProvidesUserContext", target_type):
         """
         Converts a dataset to the target_type and returns a message indicating
         status of the conversion. None is returned to indicate that dataset
@@ -6046,7 +6070,7 @@ class DatasetInstance(RepresentById, UsesCreateAndUpdateTime, _HasTable):
             return {"kind": self.conversion_messages.ERROR, "message": dep_error.value}
 
         # Check dataset state and return any messages.
-        msg = None
+        msg: dict[str, Any] | Dataset.conversion_messages | None = None
         if converted_dataset and converted_dataset.state == Dataset.states.ERROR:
             stmt = select(JobToOutputDatasetAssociation.job_id).filter_by(dataset_id=converted_dataset.id).limit(1)
             job_id = trans.sa_session.scalars(stmt).first()
@@ -6258,7 +6282,7 @@ class HistoryDatasetAssociation(DatasetInstance, HasTags, UsesAnnotations, HasNa
 
     def to_library_dataset_dataset_association(
         self,
-        trans,
+        trans: "ProvidesUserContext",
         target_folder,
         replace_dataset=None,
         parent_id=None,
@@ -11421,7 +11445,7 @@ class UserAddress(Base, RepresentById):
     # TODO: db migration to rename column, then use `desc`
     user: Mapped[Optional["User"]] = relationship(back_populates="addresses", order_by=sqlalchemy.desc("update_time"))
 
-    def to_dict(self, trans):
+    def to_dict(self, trans: "ProvidesAppContext"):
         return {
             "id": trans.security.encode_id(self.id),
             "name": sanitize_html(self.name),

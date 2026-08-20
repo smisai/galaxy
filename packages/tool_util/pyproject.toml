@@ -16,12 +16,12 @@ dependencies = [
     "galaxy-tool-util-models",
     "galaxy-util[template,image-util]>=22.1",
     "conda-package-streaming",
-    "jsonschema",
     "lxml!=4.2.2",
     "MarkupSafe",
     "packaging",
     "pydantic>=2.7.4",
     "PyYAML",
+    "regex",
     "requests",
     "sortedcontainers",
     "typing-extensions",
@@ -64,6 +64,7 @@ extended-assertions = [
 ]
 test = [
     "Beaker",
+    "jsonschema",
     "pytest",
     "pytest-mock",
 ]
