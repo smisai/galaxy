@@ -175,5 +175,6 @@
     <tool file="dicom/manage_dicomweb_sources.xml" />
     <tool file="dicom/register_dicom_series.xml" />
     <tool file="dicom/import_dicom_series.xml" />
+    <tool file="dicom/dicom_series_to_ohif_json.xml" />
   </section>
 </toolbox>

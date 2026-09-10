@@ -1,0 +1,34 @@
+<tool id="dicom_series_to_ohif_json" name="DICOM series to OHIF JSON" version="0.1.0">
+  <description>Index a DICOM series for OHIF without DICOMweb (Galaxy serves the files)</description>
+  <command detect_errors="aggressive"><![CDATA[
+#set $encoded_id = $__app__.security.encode_id($input_series.id)
+python '$__tool_directory__/dicom_series_to_ohif_json.py'
+  --series_dir '$input_series.extra_files_path'
+  --dataset_id '$encoded_id'
+  --url_prefix '/api/datasets'
+  --out '$out_json'
+  ]]></command>
+
+  <inputs>
+    <param name="input_series" type="data" format="dicom_series" label="DICOM series (Galaxy dataset)"/>
+  </inputs>
+
+  <outputs>
+    <data name="out_json" format="json" label="OHIF DICOM JSON of #${input_series.hid}"/>
+  </outputs>
+
+  <requirements>
+    <requirement type="package" version="2.4.4">pydicom</requirement>
+  </requirements>
+
+  <help><![CDATA[
+Writes an OHIF "DICOM JSON" index (studies / series / instances with naturalized
+headers) whose instance URLs point at this Galaxy server's dataset file API
+(``/api/datasets/<id>/display?filename=<file>``). Open it in OHIF with
+
+``/ohif/viewer/dicomjson?url=<galaxy>/api/datasets/<this output id>/display``
+
+The SMIS Browser visualization does this for you. No DICOMweb server is involved;
+pixels are fetched from Galaxy through the SMIS gateway with the user's session.
+  ]]></help>
+</tool>
