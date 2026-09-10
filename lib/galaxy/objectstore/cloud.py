@@ -6,7 +6,11 @@ import logging
 import os
 import os.path
 
-from ._caching_base import CachingConcreteObjectStore
+from ._caching_base import (
+    CachingConcreteObjectStore,
+    RemoteDataStream,
+    STREAM_CHUNK_SIZE,
+)
 from ._util import UsesAxel
 from .caching import (
     CacheShardManager,
@@ -51,6 +55,7 @@ class Cloud(CachingConcreteObjectStore, UsesAxel):
 
         self.provider = config_dict["provider"]
         self.credentials = config_dict["auth"]
+        self.endpoint_url = (config_dict.get("connection") or {}).get("endpoint_url")
         self.bucket_name = bucket_dict.get("name")
         self.use_rr = bucket_dict.get("use_reduced_redundancy", False)
         self.max_chunk_size = bucket_dict.get("max_chunk_size", 250)
@@ -64,19 +69,21 @@ class Cloud(CachingConcreteObjectStore, UsesAxel):
         if CloudProviderFactory is None:
             raise Exception(NO_CLOUDBRIDGE_ERROR_MESSAGE)
 
-        self.conn = self._get_connection(self.provider, self.credentials)
+        self.conn = self._get_connection(self.provider, self.credentials, self.endpoint_url)
         self.bucket = self._get_bucket(self.bucket_name)
         self._ensure_staging_path_writable()
         self._start_cache_monitor_if_needed()
         self._init_axel()
 
     @staticmethod
-    def _get_connection(provider, credentials):
+    def _get_connection(provider, credentials, endpoint_url=None):
         log.debug(f"Configuring `{provider}` Connection")
         if provider == "aws":
             config = {"aws_access_key": credentials["access_key"], "aws_secret_key": credentials["secret_key"]}
             if "region" in credentials:
                 config["aws_region_name"] = credentials["region"]
+            if endpoint_url:
+                config["s3_endpoint_url"] = endpoint_url
             connection = CloudProviderFactory().create_provider(ProviderList.AWS, config)
         elif provider == "azure":
             config = {
@@ -137,6 +144,9 @@ class Cloud(CachingConcreteObjectStore, UsesAxel):
                 raise Exception(msg)
             provider = provider.lower()
             config["provider"] = provider
+            connection_element = config_xml.find("connection")
+            if connection_element is not None:
+                config["connection"]["endpoint_url"] = connection_element.get("endpoint_url")
 
             # Read any provider-specific configuration.
             auth_element = config_xml.findall("auth")[0]
@@ -191,7 +201,7 @@ class Cloud(CachingConcreteObjectStore, UsesAxel):
         return as_dict
 
     def _config_to_dict(self):
-        return {
+        config = {
             "provider": self.provider,
             "auth": self.credentials,
             "bucket": {
@@ -200,6 +210,9 @@ class Cloud(CachingConcreteObjectStore, UsesAxel):
             },
             "cache": self._cache_config_to_dict(),
         }
+        if self.endpoint_url:
+            config["connection"] = {"endpoint_url": self.endpoint_url}
+        return config
 
     def _get_bucket(self, bucket_name):
         try:
@@ -259,6 +272,16 @@ class Cloud(CachingConcreteObjectStore, UsesAxel):
         except Exception:
             log.exception("Problem downloading key '%s' from S3 bucket '%s'", rel_path, self.bucket.name)
         return False
+
+    def _stream_remote(self, rel_path: str) -> RemoteDataStream | None:
+        key = self.bucket.objects.get(rel_path)
+        if key is None:
+            return None
+        content = key.iter_content(chunk_size=STREAM_CHUNK_SIZE)
+        # cloudbridge promises an iterable and nothing more, and what it hands back differs per
+        # provider -- a wrapper around the S3 body, a swift generator, a BytesIO -- so release it
+        # only if it knows how.
+        return RemoteDataStream(iter(content), getattr(content, "close", lambda: None))
 
     def _download_directory_into_cache(self, rel_path, cache_path):
         objects = self.bucket.objects.list(prefix=rel_path)

@@ -246,10 +246,10 @@ def _from_input_source_galaxy(input_source: InputSource, profile: float) -> Tool
             )
         elif param_type == "select":
             # Function... example in devteam cummeRbund.
-            optional = input_source.parse_optional()
             dynamic_options_config = input_source.parse_dynamic_options()
             is_static = dynamic_options_config is None
             multiple = input_source.get_bool("multiple", False)
+            optional = input_source.parse_optional(multiple)
             options: list[LabelValue] | None = None
             if is_static:
                 options = []
@@ -282,6 +282,7 @@ def _from_input_source_galaxy(input_source: InputSource, profile: float) -> Tool
             return DrillDownParameterModel(
                 type="drill_down",
                 name=input_source.parse_name(),
+                optional=input_source.parse_optional(),
                 multiple=multiple,
                 hierarchy=hierarchy,
                 options=static_options,
@@ -328,8 +329,8 @@ def _from_input_source_galaxy(input_source: InputSource, profile: float) -> Tool
                 **_common_param_kwargs(input_source),
             )
         elif param_type == "genomebuild":
-            optional = input_source.parse_optional()
             multiple = input_source.get_bool("multiple", False)
+            optional = input_source.parse_optional(multiple)
             return GenomeBuildParameterModel(
                 type="genomebuild",
                 name=input_source.parse_name(),
@@ -353,6 +354,10 @@ def _from_input_source_galaxy(input_source: InputSource, profile: float) -> Tool
             BooleanParameterModel | SelectParameterModel,
             _from_input_source_galaxy(test_param_input_source, profile),
         )
+        if isinstance(test_parameter, BooleanParameterModel) and test_parameter.optional:
+            test_parameter.optional = False
+            if test_parameter.value is None:
+                test_parameter.value = False
         whens = []
         default_test_value = cond_test_parameter_default_value(test_parameter)
         for value, case_inputs_sources in input_source.parse_when_input_sources():

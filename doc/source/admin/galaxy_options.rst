@@ -1,3 +1,17 @@
+~~~~~~~~~~~~~~~
+``server_name``
+~~~~~~~~~~~~~~~
+
+:Description:
+    Change this default when running independent Gunicorn instances on
+    the same hostname, assigning each instance a distinct base server
+    name to avoid sharing control queues. See the deployment guidance
+    at:
+    https://docs.galaxyproject.org/en/master/admin/scaling.html#unique-server-names-for-independent-gunicorn-instances
+:Default: ``main``
+:Type: str
+
+
 ~~~~~~~~~~~~~~
 ``config_dir``
 ~~~~~~~~~~~~~~
@@ -477,9 +491,14 @@
     process composes its named store with the default
     (``tool_source_database_connection``) store at runtime, with reads
     tried in declared order and writes always landing on the default.
-    Each entry takes a SQLAlchemy ``url`` and an optional ``read_only:
-    true`` flag. For SQLite connection-level read-only, use a SQLite
-    URI with ``mode=ro&uri=true``.
+    Each entry takes either a normal SQLAlchemy ``url`` or an
+    ``external_store_directory`` containing versioned publisher
+    bundles. Galaxy never consults manifests for a normal URL. For an
+    external directory it reads the sidecars and automatically selects
+    the newest cohort compatible with its store/source/index formats
+    and index schema. External stores are always read-only.
+    For SQLite connection-level read-only, use a SQLite URI with
+    ``mode=ro&uri=true``.
     For details see
     https://docs.galaxyproject.org/en/master/admin/tool_source_storage.html
 :Default: ``None``
@@ -2144,6 +2163,20 @@
 :Type: str
 
 
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+``matomo_disable_cookies``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:Description:
+    Run Matomo in "cookieless" mode. When set to true (the default),
+    Galaxy instructs the Matomo tracker to disable all tracking
+    cookies by calling _paq.push(['disableCookies']) before tracking
+    the page view. Set to false to allow Matomo to use cookies. See
+    https://matomo.org/faq/general/faq_157/ for details.
+:Default: ``true``
+:Type: bool
+
+
 ~~~~~~~~~~~~~~~~~~~
 ``display_servers``
 ~~~~~~~~~~~~~~~~~~~
@@ -2556,6 +2589,22 @@
     The custom brand image source.
 :Default: ``None``
 :Type: str
+
+
+~~~~~~~~~~~~~~~~~~~~~~
+``subdomain_switcher``
+~~~~~~~~~~~~~~~~~~~~~~
+
+:Description:
+    Sites to display in the masthead's "Switch sites" menu. Each entry
+    requires a non-empty label and an absolute HTTP or HTTPS URL.
+    Entries are displayed in the configured order, excluding the site
+    matching the current URL origin.
+    Example value: ``[{label: Base site, url:
+    https://usegalaxy.example.org}, {label: Single Cell Omics, url:
+    https://singlecell.usegalaxy.example.org}]``
+:Default: ``[]``
+:Type: seq
 
 
 ~~~~~~~~~~~~~~~~
@@ -5587,12 +5636,11 @@
     others to also reload, lock jobs, etc. For connection examples,
     see
     https://docs.celeryq.dev/projects/kombu/en/stable/userguide/connections.html
-    Without specifying anything here, galaxy will first attempt to use
-    your specified database_connection above.  If that's not specified
-    either, Galaxy will automatically create and use a separate sqlite
-    database located in your <galaxy>/database folder (indicated in
-    the commented out line below).
-:Default: ``sqlalchemy+sqlite:///./database/control.sqlite?isolation_level=IMMEDIATE``
+    When this option is not specified, Galaxy uses the configured
+    database_connection with the SQLAlchemy transport. If
+    database_connection is not explicitly configured, Galaxy creates a
+    separate SQLite database at <data_dir>/control.sqlite.
+:Default: ``None``
 :Type: str
 
 
