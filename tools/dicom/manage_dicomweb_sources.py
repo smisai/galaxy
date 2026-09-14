@@ -60,6 +60,10 @@ def main():
     ap.add_argument("--wado_uri", default="")
     ap.add_argument("--stow", default="")
     ap.add_argument("--auth_token", default="")
+    # which plane the endpoint belongs to. The import tool refuses anything but `research`:
+    # bytes reach Galaxy only from the research plane, where they are already de-identified,
+    # governed and manifest-tracked. An unlabelled source is treated as clinical (fail safe).
+    ap.add_argument("--role", choices=["clinical", "research"], default="clinical")
     ap.add_argument("--capabilities", default="")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
@@ -80,6 +84,7 @@ def main():
             "wadoUriRoot": normalize_url(args.wado_uri) or None,
             "stowRoot": normalize_url(args.stow) or None,
             "auth": {"token": args.auth_token.strip()} if args.auth_token.strip() else {},
+            "role": args.role,
             "capabilities": parse_caps(args.capabilities),
         }
         if not src["qidoRoot"] or not src["wadoRoot"]:

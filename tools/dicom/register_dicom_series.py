@@ -104,7 +104,9 @@ def main():
             "qido": src.get('qidoRoot'),
             "wado": src.get('wadoRoot'),
             "stow": src.get('stowRoot'),
-            "auth_profile": src.get('id')
+            "auth_profile": src.get('id'),
+            # clinical or research: the import tool acts on this, and an absent role is clinical
+            "role": src.get('role', 'clinical')
         },
         "uids": {
             "StudyInstanceUID": args.study_uid,

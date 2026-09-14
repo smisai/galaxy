@@ -1,5 +1,5 @@
-<tool id="dicom_import_series" name="DICOMweb: Import Series" version="0.1.0">
-  <description>Download and de-identify DICOM series from DICOMweb source</description>
+<tool id="dicom_import_series" name="DICOMweb: Import Series" version="0.2.0">
+  <description>Import a de-identified series from the research plane</description>
   <command detect_errors="aggressive"><![CDATA[
 python '$__tool_directory__/import_dicom_series.py'
   --input '$input_ref'
@@ -19,7 +19,7 @@ python '$__tool_directory__/import_dicom_series.py'
       format="dicom_series" refers to the datatype extension defined in datatypes_conf.xml
       which maps to galaxy.datatypes.dicom:DICOMSeries
     -->
-    <data name="out_series" format="dicom_series" label="De-identified Series"/>
+    <data name="out_series" format="dicom_series" label="Series (research plane)"/>
   </outputs>
 
   <requirements>
@@ -28,7 +28,14 @@ python '$__tool_directory__/import_dicom_series.py'
   </requirements>
 
   <help><![CDATA[
-Downloads a DICOM Series via WADO-RS using configuration from the input DICOM Reference.
-De-identifies the data by stripping sensitive Patient metadata before saving.
+Downloads a DICOM series via WADO-RS from the source named in the input DICOM Reference.
+
+The source must be a **research-plane** endpoint (registered with role ``research``). The research
+plane holds only de-identified, governed, manifest-tracked copies made by the manifest service's
+materialization step; this tool verifies each instance declares ``PatientIdentityRemoved=YES`` and
+imports it unchanged. It refuses a clinical source: materialize the selection first, then import.
+
+Nothing is de-identified here. That happens once, under a persisted scope key, where the
+manifest records it and end-of-retention destruction can find it.
   ]]></help>
 </tool>

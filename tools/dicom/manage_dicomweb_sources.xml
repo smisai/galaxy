@@ -1,4 +1,4 @@
-<tool id="dicomweb_manage_sources" name="DICOMweb: Manage Data Sources" version="0.1.0">
+<tool id="dicomweb_manage_sources" name="DICOMweb: Manage Data Sources" version="0.2.0">
   <description>Add, update, or remove DICOMweb sources (user-level)</description>
 
   <command detect_errors="aggressive"><![CDATA[
@@ -21,6 +21,7 @@ python '$__tool_directory__/manage_dicomweb_sources.py'
     #if $do_add_update.auth_token:
       --auth_token '$do_add_update.auth_token'
     #end if
+    --role '$do_add_update.role'
     #if $do_add_update.capabilities_json:
       --capabilities '$do_add_update.capabilities_json'
     #end if
@@ -58,6 +59,10 @@ python '$__tool_directory__/manage_dicomweb_sources.py'
         <param name="stowRoot" type="text" optional="true" label="STOW Root URL (optional)">
              <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
         </param>
+        <param name="role" type="select" label="Plane" help="research: de-identified copies the manifest service materialized (the only kind the import tool accepts). clinical: a PACS or VNA; registering it lets you build references, never import from it.">
+          <option value="research" selected="true">research (de-identified copies)</option>
+          <option value="clinical">clinical (identified source; reference only)</option>
+        </param>
         <param name="auth_token" type="text" optional="true" label="Auth Token (Bearer)" help="Optional Bearer token for OAuth2 proxy"/>
         <param name="capabilities_json" type="text" optional="true"
                label="Capabilities JSON (optional)"
@@ -78,6 +83,10 @@ python '$__tool_directory__/manage_dicomweb_sources.py'
         </param>
         <param name="stowRoot" type="text" optional="true" label="STOW Root URL (optional)">
             <validator type="regex" message="Must start with http:// or https://">^https?://.+</validator>
+        </param>
+        <param name="role" type="select" label="Plane" help="research: de-identified copies the manifest service materialized (the only kind the import tool accepts). clinical: a PACS or VNA; registering it lets you build references, never import from it.">
+          <option value="research" selected="true">research (de-identified copies)</option>
+          <option value="clinical">clinical (identified source; reference only)</option>
         </param>
         <param name="auth_token" type="text" optional="true" label="Auth Token (Bearer)" help="Optional Bearer token for OAuth2 proxy"/>
         <param name="capabilities_json" type="text" optional="true" label="Capabilities JSON (optional)"/>

@@ -5,7 +5,6 @@ import logging
 import os
 import requests
 import pydicom
-import uuid
 import email
 from email.policy import default
 from io import BytesIO
@@ -14,37 +13,35 @@ from io import BytesIO
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-# List of tags to anonymize/remove
-SENSITIVE_TAGS = [
-    'PatientName',
-    'PatientBirthDate',
-    'PatientSex',
-    'OtherPatientIDs',
-    'PatientAddress',
-    'PatientTelephoneNumbers',
-    'PatientMotherBirthName'
-]
+# This tool used to strip a list of tags and set PatientID to a random UUID per instance —
+# so one patient's slices got different pseudonyms, under a standard no manifest declared.
+# It no longer de-identifies anything. De-identification is the manifest service's
+# materialization step (smis_schemas.deid under a persisted scope key), which writes governed,
+# manifest-tracked copies into the research Orthanc. This tool imports from there, and refuses
+# a clinical source: a Galaxy job pulling from the PACS would be a copy nothing records, nothing
+# governs, and /destroy cannot reach at end of retention.
 
-def deidentify_dataset(ds):
-    """
-    Remove sensitive tags and replace PatientID with a random UUID if needed.
-    (Simple anonymization logic)
-    """
-    # 1. Remove sensitive tags
-    for tag in SENSITIVE_TAGS:
-        if tag in ds:
-            del ds[tag]
+RESEARCH_ROLE = "research"
 
-    # 2. Hash or replace PatientID
-    # For this implementation, we just prefix/suffix or assume downstream handling.
-    # But user requested stripping sensitive info.
-    # Let's replace PatientID with an anonymous ID if present.
-    # original_pid = getattr(ds, 'PatientID', 'unknown')
-    # Use a deterministic hash logic or simple replacement could be better
-    # depending on study requirements. Here we just strictly clean.
-    ds.PatientID = f"ANON_{uuid.uuid4().hex[:8]}"
 
-    return ds
+def refuse_unless_research(ref: dict) -> None:
+    role = (ref.get("dicomweb") or {}).get("role", "clinical")
+    if role != RESEARCH_ROLE:
+        raise SystemExit(
+            f"refusing to import from a {role!r} source: bytes reach Galaxy only from the research plane. "
+            "Materialize the selection first (SMIS Browser > Make a dataset > materialize, or "
+            "POST /manifests/{id}/materialize), then register the research source with role=research and import that.")
+
+
+def refuse_unless_deidentified(ds) -> None:
+    """PS3.15 says an object that went through a de-identification profile carries
+    PatientIdentityRemoved=YES. The research plane should hold nothing else; this checks
+    rather than trusts, per instance."""
+    if str(getattr(ds, "PatientIdentityRemoved", "")).upper() != "YES":
+        raise SystemExit(
+            f"instance {getattr(ds, 'SOPInstanceUID', '?')} does not declare PatientIdentityRemoved=YES; "
+            "the research plane must hold de-identified objects only, so this import stops here.")
+
 
 def save_dicom_part(content, output_dir, counter):
     try:
@@ -52,9 +49,9 @@ def save_dicom_part(content, output_dir, counter):
         with BytesIO(content) as f:
             ds = pydicom.dcmread(f)
         
-        # De-identify
-        deidentify_dataset(ds)
-        
+        # Already de-identified in the research plane; verify the declaration, never re-do it
+        refuse_unless_deidentified(ds)
+
         # Save
         # Use SOPInstanceUID as filename if available, else counter
         filename = f"{ds.SOPInstanceUID}.dcm" if hasattr(ds, 'SOPInstanceUID') else f"image_{counter:05d}.dcm"
@@ -80,6 +77,7 @@ def main():
     with open(args.input, 'r') as f:
         ref_data = json.load(f)
 
+    refuse_unless_research(ref_data)
     dicomweb = ref_data.get('dicomweb', {})
     uids = ref_data.get('uids', {})
     wado_root = dicomweb.get('wado')

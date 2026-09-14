@@ -1,4 +1,4 @@
-<tool id="dicom_register_series" name="DICOMweb: Register Series" version="0.1.0">
+<tool id="dicom_register_series" name="DICOMweb: Register Series" version="0.2.0">
   <description>Verify and register a DICOM Series from a DICOMweb source</description>
   <command detect_errors="aggressive"><![CDATA[
 python '$__tool_directory__/register_dicom_series.py'
